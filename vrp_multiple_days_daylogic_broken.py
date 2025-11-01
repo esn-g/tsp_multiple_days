@@ -19,9 +19,9 @@ def main():
                         help='The earliest any trip can start on any day, in hours. Default 6')
     parser.add_argument('--end', type=int, dest='end', default=18,
                         help='The earliest any trip can end on any day, in hours.  Default 18 (which is 6pm)')
-    parser.add_argument('--waittime', type=int, dest='service', default=30,
+    parser.add_argument('--waittime', type=int, dest='service', default=120,
                         help='The time required to wait at each visited node, in minutes.  Default is 30')
-    parser.add_argument('-t, --timelimit', type=int, dest='timelimit', default=10,
+    parser.add_argument('-t, --timelimit', type=int, dest='timelimit', default=30,
                         help='Maximum run time for solver, in seconds.  Default is 10 seconds.')
     parser.add_argument('--debug', action='store_true', dest='debug', default=False,
                         help="Turn on solver logging.")
@@ -31,7 +31,7 @@ def main():
     parser.add_argument('--skip_mornings', action='store_true', dest='skip_mornings',
                         default=False,
                         help='Whether or not to use dummy morning nodes.  Default is true')
-    parser.add_argument('--vehicles', type=int, dest='vehicles', default=2,
+    parser.add_argument('--vehicles', type=int, dest='vehicles', default=4,
                         help='Number of vehicles to schedule. Default is 2')
 
     args = parser.parse_args()
@@ -53,22 +53,40 @@ def main():
     node_service_time = args.service * 60
     overnight_time =   (day_start - day_end) # -18*3600 #
 
-    disjunction_penalty = 10000000
+    # disjunction_penalty = 10000000
 
     Slack_Max = (day_end - day_start) - day_start # night node demand minus no-work day
     #  3600*24
     Capacity = day_end # most time that can be collected in one day
 
     num_nodes = T.num_nodes()
-    # create dummy nodes for returning to the depot every night
-    night_nodes = range(num_nodes, num_nodes+num_days)
+    num_overnights = args.days - 1  # 4 overnights for 5 days
 
-    # create dummy nodes linked to night nodes that fix the AM depart time
-    morning_nodes = range(num_nodes+num_days, num_nodes+num_days+num_days)
-    if args.skip_mornings:
-        morning_nodes = []
+    night_nodes_by_vehicle = []
+    morning_nodes_by_vehicle = []
+    
+    all_night_nodes = []
+    all_morning_nodes = []
+    
+    current_node_index = num_nodes # Start indexing from 42
+    
+    for v in range(num_vehicles):
+        vehicle_nights = list(range(current_node_index, current_node_index + num_overnights))
+        current_node_index += num_overnights
+        
+        vehicle_mornings = []
+        if not args.skip_mornings:
+            vehicle_mornings = list(range(current_node_index, current_node_index + num_overnights))
+            current_node_index += num_overnights
+        
+        night_nodes_by_vehicle.append(vehicle_nights)
+        morning_nodes_by_vehicle.append(vehicle_mornings)
+        
+        all_night_nodes.extend(vehicle_nights)
+        all_morning_nodes.extend(vehicle_mornings)
 
-    total_nodes = num_nodes + len(night_nodes) +len(morning_nodes)
+    total_nodes = num_nodes + len(all_night_nodes) + len(all_morning_nodes)
+
     # Create the routing index manager.
     
     # multiple vehicles
@@ -81,8 +99,8 @@ def main():
 
     print('made manager with total nodes {} = {} + {} + {}'.format(total_nodes,
                                                                    num_nodes,
-                                                                   len(night_nodes),
-                                                                   len(morning_nodes)))
+                                                                   len(all_night_nodes),
+                                                                   len(all_morning_nodes)))
     # Create Routing Model.
     # use precaching on OR-Tools side.  So Much Faster
     model_parameters = pywrapcp.DefaultRoutingModelParameters()
@@ -93,8 +111,8 @@ def main():
     transit_callback_fn = partial(T.transit_callback,
                                   manager,
                                   day_end,
-                                  night_nodes,
-                                  morning_nodes)
+                                  all_night_nodes,
+                                  all_morning_nodes)
 
     transit_callback_index = routing.RegisterTransitCallback(transit_callback_fn)
 
@@ -105,8 +123,8 @@ def main():
                                manager,
                                node_service_time,
                                overnight_time,
-                               night_nodes,
-                               morning_nodes)
+                               all_night_nodes,
+                               all_morning_nodes)
 
     time_callback_index = routing.RegisterTransitCallback(time_callback_fn)
 
@@ -129,20 +147,20 @@ def main():
     for node in range(2, num_nodes):
       index = manager.NodeToIndex(node)
       time_dimension.SlackVar(index).SetValue(0)
-    for node in morning_nodes:
+    for node in all_morning_nodes:
       index = manager.NodeToIndex(node)
       time_dimension.SlackVar(index).SetValue(0)
 
 
     # Allow all locations except the first two to be droppable.
-    for node in range(2, num_nodes):
-      routing.AddDisjunction([manager.NodeToIndex(node)], disjunction_penalty)
+    #for node in range(2, num_nodes):
+    #  routing.AddDisjunction([manager.NodeToIndex(node)], disjunction_penalty)
 
     # Allow all overnight nodes to be dropped for free
-    for node in night_nodes:
-      routing.AddDisjunction([manager.NodeToIndex(node)], 0)
-    for node in morning_nodes:
-      routing.AddDisjunction([manager.NodeToIndex(node)], 0)
+    #for node in all_night_nodes:
+    #  routing.AddDisjunction([manager.NodeToIndex(node)], 0)
+    #for node in all_morning_nodes:
+    #  routing.AddDisjunction([manager.NodeToIndex(node)], 0)
 
     # Add time window constraints for each regular node
     for node in range(2,num_nodes):
@@ -176,46 +194,72 @@ def main():
 
     # use count dim to enforce ordering of overnight, morning nodes
     solver = routing.solver()
-    for i in range(len(night_nodes)):
-      inode = night_nodes[i]
-      iidx = manager.NodeToIndex(inode)
-      iactive = routing.ActiveVar(iidx)
+    
+    # NEW CONSTRAINT: Ensure vehicles only visit their *own* dummy nodes
+    for v in range(num_vehicles):
+        # Get all dummy nodes that *don't* belong to this vehicle
+        disallowed_dummies = []
+        for v_other in range(num_vehicles):
+            if v == v_other:
+                continue
+            disallowed_dummies.extend(night_nodes_by_vehicle[v_other])
+            disallowed_dummies.extend(morning_nodes_by_vehicle[v_other])
 
-      for j in range(i+1, len(night_nodes)):
-        # make i come before j using count dimension
-        jnode = night_nodes[j]
-        jidx = manager.NodeToIndex(jnode)
-        jactive = routing.ActiveVar(jidx)
-        solver.Add(iactive >= jactive)
-        solver.Add(count_dimension.CumulVar(iidx) * iactive * jactive <=
-                   count_dimension.CumulVar(jidx) * iactive * jactive)
+        for dummy_node in disallowed_dummies:
+            dummy_index = manager.NodeToIndex(dummy_node)
+            # Add a constraint that vehicle 'v' cannot be the
+            # vehicle assigned to visit this dummy_index
+            solver.Add(routing.VehicleVar(dummy_index) != v)
 
-      # if night node is active, AND night_node is not the last night,
-      # must transition to corresponding morning node
-      if i < len(morning_nodes):
-        i_morning_idx = manager.NodeToIndex(morning_nodes[i])
-        i_morning_active = routing.ActiveVar(i_morning_idx)
-        solver.Add(iactive == i_morning_active)
-        solver.Add(count_dimension.CumulVar(iidx) + 1 ==
-                   count_dimension.CumulVar(i_morning_idx))
+    print('done setting up vehicle/dummy node constraints')
+    
+    # use count dim to enforce ordering of overnight, morning nodes
+    # --- THIS IS ALL WRAPPED IN A 'for v' LOOP NOW ---
+    for v in range(num_vehicles):
+        vehicle_night_nodes = night_nodes_by_vehicle[v]
+        vehicle_morning_nodes = morning_nodes_by_vehicle[v]
 
-    for i in range(len(morning_nodes)):
-      inode = morning_nodes[i]
-      iidx = manager.NodeToIndex(inode)
-      iactive = routing.ActiveVar(iidx)
+        for i in range(len(vehicle_night_nodes)):
+          inode = vehicle_night_nodes[i]
+          iidx = manager.NodeToIndex(inode)
+          iactive = routing.ActiveVar(iidx)
 
-      for j in range(i+1, len(morning_nodes)):
-        # make i come before j using count dimension
-        jnode = morning_nodes[j]
-        jidx = manager.NodeToIndex(jnode)
-        jactive = routing.ActiveVar(jidx)
+          for j in range(i+1, len(vehicle_night_nodes)):
+            # make i come before j using count dimension
+            jnode = vehicle_night_nodes[j]
+            jidx = manager.NodeToIndex(jnode)
+            jactive = routing.ActiveVar(jidx)
+            solver.Add(iactive >= jactive)
+            solver.Add(count_dimension.CumulVar(iidx) * iactive * jactive <=
+                       count_dimension.CumulVar(jidx) * iactive * jactive)
 
-        solver.Add(iactive >= jactive)
-        solver.Add(count_dimension.CumulVar(iidx) * iactive * jactive <=
-                   count_dimension.CumulVar(jidx) * iactive * jactive)
+          # if night node is active, AND night_node is not the last night,
+          # must transition to corresponding morning node
+          if i < len(vehicle_morning_nodes):
+            i_morning_idx = manager.NodeToIndex(vehicle_morning_nodes[i])
+            i_morning_active = routing.ActiveVar(i_morning_idx)
+            solver.Add(iactive == i_morning_active)
+            solver.Add(count_dimension.CumulVar(iidx) + 1 ==
+                       count_dimension.CumulVar(i_morning_idx))
+
+        for i in range(len(vehicle_morning_nodes)):
+          inode = vehicle_morning_nodes[i]
+          iidx = manager.NodeToIndex(inode)
+          iactive = routing.ActiveVar(iidx)
+
+          for j in range(i+1, len(vehicle_morning_nodes)):
+            # make i come before j using count dimension
+            jnode = vehicle_morning_nodes[j]
+            jidx = manager.NodeToIndex(jnode)
+            jactive = routing.ActiveVar(jidx)
+
+            solver.Add(iactive >= jactive)
+            solver.Add(count_dimension.CumulVar(iidx) * iactive * jactive <=
+                       count_dimension.CumulVar(jidx) * iactive * jactive)
 
 
     print('done setting up ordering constraints between days')
+
 
     # Instantiate route start and end times to produce feasible times.
     # routing.AddVariableMinimizedByFinalizer(time_dimension.CumulVar(routing.Start(0)))
@@ -251,7 +295,7 @@ def main():
         if routing.IsStart(index) or routing.IsEnd(index):
           continue
         node = manager.IndexToNode(index)
-        if node in night_nodes or node in morning_nodes:
+        if node in all_night_nodes or node in all_morning_nodes:
           continue
         if solution.Value(routing.NextVar(index)) == index:
           result['Dropped'].append(node)
@@ -281,9 +325,9 @@ def main():
             node = manager.IndexToNode(index)
             
             node_str = node # Default
-            if node in night_nodes:
+            if node in all_night_nodes:
               node_str = 'Overnight at {}, dummy for 1'.format(node)
-            if node in morning_nodes:
+            if node in all_morning_nodes:
               node_str = 'Starting day at {}, dummy for 1'.format(node)
 
             mintime = timedelta(seconds=solution.Min(cumultime))
@@ -316,9 +360,9 @@ def main():
       print(result['Dropped'])
 
       print('Scheduled')
-      print('[node, order, min time, max time]')
-      for line in result['Scheduled']:
-        print(line)
+      #print('[node, order, min time, max time]')
+      #for line in result['Scheduled']:
+      #  print(line)
 
       #print(result)
 

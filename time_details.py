@@ -286,7 +286,7 @@ def transit_callback(manager,
     if to_node in night_nodes or to_node in morning_nodes:
       to_node = 1
 
-    return Matrix[from_node][to_node]
+    return int(Matrix[from_node][to_node])
 
 
 def time_callback(manager,
@@ -317,4 +317,4 @@ def time_callback(manager,
     if to_node >= _num_nodes:
         to_node = 1
 
-    return Matrix[from_node][to_node] + _service_time
+    return int(Matrix[from_node][to_node] + _service_time)
