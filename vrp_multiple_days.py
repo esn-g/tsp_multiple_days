@@ -166,14 +166,6 @@ def main():
     for node in all_night_nodes:
       index = manager.NodeToIndex(node)
       time_dimension.CumulVar(index).SetRange(day_end,day_end)
-      
-    #### MAYBE NOT NEEDED? ####
-    # Add time window constraints for each vehicle start/end node.
-    # for veh in range(num_vehicles):
-    #  index = routing.Start(veh)
-    #  time_dimension.CumulVar(index).SetMin(day_start)
-    #  index = routing.End(veh)
-    #  time_dimension.CumulVar(index).SetMax(day_end)
 
     print('done with time constraints')
 
@@ -243,18 +235,18 @@ def main():
       }
 
       # Return the dropped locations
-      for index in range(routing.Size()):
-        if routing.IsStart(index) or routing.IsEnd(index):
-          continue
-        node = manager.IndexToNode(index)
-        if node in all_night_nodes or node in all_morning_nodes:
-          continue
-        if solution.Value(routing.NextVar(index)) == index:
-          result['Dropped'].append(node)
+      # for index in range(routing.Size()):
+      #   if routing.IsStart(index) or routing.IsEnd(index):
+      #     continue
+      #   node = manager.IndexToNode(index)
+      #   if node in all_night_nodes or node in all_morning_nodes:
+      #     continue
+      #   if solution.Value(routing.NextVar(index)) == index:
+      #     result['Dropped'].append(node)
       
-      print('Dropped Nodes:')
-      print(result['Dropped'])
-      print('---')
+      # print('Dropped Nodes:')
+      # print(result['Dropped'])
+      # print('---')
       ## contiunue here !! # ##. #
 
       # Return the scheduled locations for ALL vehicles
