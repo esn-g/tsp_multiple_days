@@ -1,11 +1,17 @@
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from code.tsp_multiple_days.classes.Jobclass import Jobclass
-from code import data_harvest
+
+from classes.Jobclass import Jobclass
 
 # sets up the optimization problem for multiple days for real data
-input_dir = Path.home() / "Desktop" / "OptimalRoutePlanning" / "Code" / "Kund1" / "september_clean"
+# prefer the data that ships with the repository but still keep backward
+# compatibility with the historical desktop path that the original scripts
+# referenced.
+_REPO_INPUT_DIR = Path(__file__).resolve().parent / "Kund1" / "september_clean"
+_LEGACY_INPUT_DIR = (
+    Path.home() / "Desktop" / "OptimalRoutePlanning" / "Code" / "Kund1" / "september_clean"
+)
 # adress of pilot customer 1 depot
 depot_adr = "Storgatan 69 ,523 31 ULRICEHAMN, Sweden"
 # dummy todays date
@@ -14,7 +20,7 @@ todays_date = datetime(2025, 9, 1)
 
 def retrieve_jobs(todays_date, horizon_days=4):
     """
-    Read the Excel file in `input_dir` and return rows where the 'Datum' column
+    Read the Excel file in the data directory and return rows where the 'Datum' column
     falls between `todays_date` and `todays_date + horizon_days` (inclusive).
 
     Parameters:
@@ -24,12 +30,16 @@ def retrieve_jobs(todays_date, horizon_days=4):
         pandas.DataFrame: filtered rows (copy). If the Excel file or column is missing,
         raises FileNotFoundError or KeyError respectively.
     """
-    # resolve path fallback in case input_dir doesn't exist (common dev vs prod path differences)
-    path = input_dir
-    if not path.exists():
-        alt = Path(__file__).resolve().parents[1] / "Kund1" / "september_clean"
-        if alt.exists():
-            path = alt
+    # resolve path fallback in case the default repo directory doesn't exist
+    for candidate in (_REPO_INPUT_DIR, _LEGACY_INPUT_DIR):
+        if candidate.exists():
+            path = candidate
+            break
+    else:
+        raise FileNotFoundError(
+            "Could not locate the input directory. Checked: "
+            f"{_REPO_INPUT_DIR} and {_LEGACY_INPUT_DIR}"
+        )
 
     excel_path = path / "september_arbete.xlsx"
     if not excel_path.exists():
@@ -56,7 +66,11 @@ def format_jobs(jobs_df):
     for index, row in jobs_df.iterrows():
         # Basic job info
         job_id = row.get("Job ID", index)  # Use index as fallback ID
-        description = row.get("Tjänst", "No Description") + row.get("Proj.nr ", "No Description") +
+        description_parts = [
+            str(row.get("Tjänst", "No Description")),
+            str(row.get("Proj.nr ", "")).strip(),
+        ]
+        description = " ".join(part for part in description_parts if part)
         zip_code = row.get("Arb.adress postnr.", "")
         adress = f"{row.get('Arb.adress', '')} {zip_code}".strip()
         day = row.get("Dag" )
@@ -90,6 +104,8 @@ def format_jobs(jobs_df):
         job_list.append(job)
     
     return job_list
+
+
 def make_time_matrix(job_list):
     """Create a time matrix based on job addresses including depot."""
     job_addresses = [depot_adr]
