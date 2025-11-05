@@ -1,7 +1,7 @@
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from Jobclass import Jobclass
+from code.tsp_multiple_days.classes.Jobclass import Jobclass
 from code import data_harvest
 
 # sets up the optimization problem for multiple days for real data
@@ -56,9 +56,10 @@ def format_jobs(jobs_df):
     for index, row in jobs_df.iterrows():
         # Basic job info
         job_id = row.get("Job ID", index)  # Use index as fallback ID
-        description = row.get("Tjänst", "No Description")
+        description = row.get("Tjänst", "No Description") + row.get("Proj.nr ", "No Description") +
         zip_code = row.get("Arb.adress postnr.", "")
-        address = f"{row.get('Arb.adress', '')} {zip_code}".strip()
+        adress = f"{row.get('Arb.adress', '')} {zip_code}".strip()
+        day = row.get("Dag" )
         
         # Calculate service time from Tid column (e.g. "06:00-07:15")
         service_time = 0  # default
@@ -83,7 +84,7 @@ def format_jobs(jobs_df):
         job = Jobclass(
             job_id=job_id,
             description=description,
-            adress=address,  # note: using address here to match Jobclass parameter name
+            adress=adress,
             service_time=service_time,
         )
         job_list.append(job)
