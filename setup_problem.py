@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 from classes.Jobclass import Jobclass
+from classes.Workerclass import Workerclass
 
 # sets up the optimization problem for multiple days for real data
 # prefer the data that ships with the repository but still keep backward
@@ -11,6 +12,15 @@ from classes.Jobclass import Jobclass
 _REPO_INPUT_DIR = Path(__file__).resolve().parent / "Kund1" / "september_clean"
 _LEGACY_INPUT_DIR = (
     Path.home() / "Desktop" / "OptimalRoutePlanning" / "Code" / "Kund1" / "september_clean"
+)
+_REPO_STAFF_DIR = Path(__file__).resolve().parent / "Kund1" / "anställda"
+_LEGACY_STAFF_DIR = (
+    Path.home()
+    / "Desktop"
+    / "OptimalRoutePlanning"
+    / "Code"
+    / "Kund1"
+    / "anställda"
 )
 # adress of pilot customer 1 depot
 depot_adr = "Storgatan 69 ,523 31 ULRICEHAMN, Sweden"
@@ -62,48 +72,108 @@ def retrieve_jobs(todays_date, horizon_days=4):
 
 def format_jobs(jobs_df):
     """Convert DataFrame rows to Jobclass instances with calculated service times."""
+
+    first_sixteen_columns = [
+        "Dag",
+        "Datum",
+        "Tid",
+        "Rast(min)",
+        "Personal",
+        "Tjänst",
+        "Arb.adress",
+        "Arb.adress postnr.",
+        "Proj.nr",
+        "Projekt",
+        "Kundnr",
+        "Kund",
+        "Fakt.bes.",
+        "Typ",
+        "Status",
+        "Bokningsfrekvens",
+    ]
+
     job_list = []
     for index, row in jobs_df.iterrows():
-        # Basic job info
-        job_id = row.get("Job ID", index)  # Use index as fallback ID
-        description_parts = [
-            str(row.get("Tjänst", "No Description")),
-            str(row.get("Proj.nr ", "")).strip(),
-        ]
-        description = " ".join(part for part in description_parts if part)
-        zip_code = row.get("Arb.adress postnr.", "")
-        adress = f"{row.get('Arb.adress', '')} {zip_code}".strip()
-        day = row.get("Dag" )
-        
+        job_id = row.get("Job ID", index)  # Fallback to the DataFrame index
+
         # Calculate service time from Tid column (e.g. "06:00-07:15")
         service_time = 0  # default
         try:
-            if pd.notna(row.get('Tid')) and '-' in str(row['Tid']):
-                start_str, end_str = row['Tid'].split('-')
-                # Create datetime objects for the same date to calculate duration
-                base_date = pd.to_datetime(row['Datum']).strftime('%Y-%m-%d')
+            if pd.notna(row.get("Tid")) and "-" in str(row["Tid"]):
+                start_str, end_str = row["Tid"].split("-")
+                base_date = pd.to_datetime(row["Datum"]).strftime("%Y-%m-%d")
                 start_time = pd.to_datetime(f"{base_date} {start_str.strip()}")
                 end_time = pd.to_datetime(f"{base_date} {end_str.strip()}")
                 service_time = (end_time - start_time).total_seconds() / 3600  # hours
         except (ValueError, AttributeError) as e:
             print(f"Warning: Could not parse time for job {job_id}: {e}")
             service_time = 1  # fallback to 1 hour if parsing fails
-        
-        # Default values for other required parameters
-        
-        # day_required = pd.to_datetime(row['Datum']).date()  # we know Datum exists from retrieve_jobs
-        # time_slot_required = row.get('Tid', "")  # original time slot string
-        # periodicity = row.get('Periodicity', 'once')  # default to one-time job
-        
+
+        column_values = {column: row.get(column) for column in first_sixteen_columns}
+
         job = Jobclass(
             job_id=job_id,
-            description=description,
-            adress=adress,
+            day=column_values.get("Dag"),
+            date=column_values.get("Datum"),
+            time_slot=column_values.get("Tid"),
+            break_minutes=column_values.get("Rast(min)"),
+            staff_name=column_values.get("Personal"),
+            service_name=column_values.get("Tjänst"),
+            work_address=column_values.get("Arb.adress"),
+            work_postcode=column_values.get("Arb.adress postnr."),
+            project_number=column_values.get("Proj.nr"),
+            project_name=column_values.get("Projekt"),
+            customer_number=column_values.get("Kundnr"),
+            customer_name=column_values.get("Kund"),
+            billing_reference=column_values.get("Fakt.bes."),
+            job_type=column_values.get("Typ"),
+            status=column_values.get("Status"),
+            booking_frequency=column_values.get("Bokningsfrekvens"),
             service_time=service_time,
         )
         job_list.append(job)
-    
+
     return job_list
+
+
+def retrieve_workers():
+    """Read the September staff details Excel file and return a DataFrame."""
+
+    for candidate in (_REPO_STAFF_DIR, _LEGACY_STAFF_DIR):
+        if candidate.exists():
+            staff_dir = candidate
+            break
+    else:
+        raise FileNotFoundError(
+            "Could not locate the staff directory. Checked: "
+            f"{_REPO_STAFF_DIR} and {_LEGACY_STAFF_DIR}"
+        )
+
+    staff_path = staff_dir / "September_staff_details.xlsx"
+    if not staff_path.exists():
+        raise FileNotFoundError(f"Staff Excel file not found at {staff_path}")
+
+    return pd.read_excel(staff_path, engine="openpyxl")
+
+
+def format_workers(workers_df):
+    """Convert DataFrame rows to Workerclass instances."""
+
+    worker_list = []
+    for _, row in workers_df.iterrows():
+        worker = Workerclass(
+            name=row.get("Namn"),
+            has_driver_license=str(row.get("Har körkort", "")).strip().lower() in {"ja", "yes", "y", "1", "true"},
+            employee_number=row.get("Anst.nr"),
+            days_per_week=row.get("Dagar per vecka"),
+            hours_per_week=row.get("Timmar per vecka"),
+            employment_percentage=row.get("Anställningsgrad (%)"),
+            employment_terms=row.get("Anst.villkor"),
+            salary_type=row.get("Lönetyp"),
+        )
+        worker_list.append(worker)
+
+    return worker_list
 
 
 def make_time_matrix(job_list):
@@ -116,9 +186,8 @@ def make_time_matrix(job_list):
 
 if __name__ == "__main__":
     jobs_df = retrieve_jobs(todays_date, horizon_days=4)
-    job_list = format_jobs(jobs_df)
-    print(job_list)
-    
-    print(f"Found {len(jobs_df)} jobs between {pd.to_datetime(todays_date).date()} and {(pd.to_datetime(todays_date) + pd.Timedelta(days=5)).date()}")
-    
-    
+    job_class_list = format_jobs(jobs_df)
+    workers_df = retrieve_workers()
+    worker_class_list = format_workers(workers_df)
+
+    print(f"Prepared {len(job_class_list)} jobs and {len(worker_class_list)} workers for optimisation")
