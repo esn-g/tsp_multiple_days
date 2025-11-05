@@ -4,6 +4,7 @@ from pathlib import Path
 
 from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
+from vrp.problem_structures import VRPProblemBuilder
 
 # sets up the optimization problem for multiple days for real data
 # prefer the data that ships with the repository but still keep backward
@@ -176,13 +177,11 @@ def format_workers(workers_df):
     return worker_list
 
 
-def make_time_matrix(job_list):
-    """Create a time matrix based on job addresses including depot."""
-    job_addresses = [depot_adr]
-    for job in job_list:
-        job.get_job_adress()
-        job_addresses.append(job.get_job_adress())
-    pass
+def build_vrp_problem(job_list, worker_list):
+    """Create a :class:`VRPProblemDefinition` for the current data set."""
+
+    builder = VRPProblemBuilder()
+    return builder.build_problem(jobs=job_list, workers=worker_list, depot_address=depot_adr)
 
 if __name__ == "__main__":
     jobs_df = retrieve_jobs(todays_date, horizon_days=4)
@@ -190,4 +189,12 @@ if __name__ == "__main__":
     workers_df = retrieve_workers()
     worker_class_list = format_workers(workers_df)
 
-    print(f"Prepared {len(job_class_list)} jobs and {len(worker_class_list)} workers for optimisation")
+    vrp_problem = build_vrp_problem(job_class_list, worker_class_list)
+
+    print(
+        "Prepared {jobs} jobs, {workers} workers and a {matrix}x{matrix} time matrix".format(
+            jobs=len(vrp_problem.nodes),
+            workers=len(vrp_problem.worker_constraints),
+            matrix=len(vrp_problem.time_matrix),
+        )
+    )
