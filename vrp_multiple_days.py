@@ -3,14 +3,241 @@ from ortools.constraint_solver import routing_enums_pb2
 from functools import partial
 from datetime import datetime, timedelta
 from datetime import time as dt_time
+from typing import List
 import argparse
 import time_details as T
 import time
+
+from vrp.problem_structures import VRPProblemDefinition
 
 def timedelta_format(td):
     ts = int(td.total_seconds())
     tm = dt_time(hour=(ts//3600),second=(ts%3600//60))
     return tm.strftime("%H:%S")
+
+
+def solve_vrp_problem_definition(
+    problem: VRPProblemDefinition,
+    *,
+    days: int = 2,
+    start_hour: int = 6,
+    end_hour: int = 18,
+    service_fallback_minutes: int = 120,
+    timelimit_seconds: int = 30,
+    debug: bool = False,
+    guided_local_search: bool = True,
+    vehicles: int = 4,
+):
+    """Solve the multi-day VRP instance defined by ``problem``.
+
+    The implementation mirrors the existing command line solver but takes the
+    structured :class:`~vrp.problem_structures.VRPProblemDefinition` so other
+    modules can easily feed data without going through the ``time_details``
+    helper module.
+    """
+
+    if days <= 0:
+        raise ValueError("days must be a positive integer")
+    if vehicles <= 0:
+        raise ValueError("vehicles must be a positive integer")
+
+    day_start = start_hour * 3600
+    day_end = end_hour * 3600
+    base_matrix = problem.time_matrix
+    if not base_matrix:
+        raise ValueError("time_matrix must not be empty")
+    matrix_size = len(base_matrix)
+    if any(len(row) != matrix_size for row in base_matrix):
+        raise ValueError("time_matrix must be square")
+
+    service_fallback = max(service_fallback_minutes, 0) * 60
+    service_times: List[int] = [0] * matrix_size
+    for node in problem.nodes:
+        if 0 <= node.node_id < matrix_size:
+            duration = int(node.service_duration.total_seconds())
+            service_times[node.node_id] = duration if duration > 0 else service_fallback
+
+    for idx in range(1, matrix_size):
+        if service_times[idx] <= 0:
+            service_times[idx] = service_fallback
+
+    t0 = time.perf_counter()
+    overnight_time = (day_start - day_end)
+    num_nodes = matrix_size
+    num_overnights = days - 1
+
+    night_nodes_by_vehicle: List[List[int]] = []
+    morning_nodes_by_vehicle: List[List[int]] = []
+    all_night_nodes: List[int] = []
+    all_morning_nodes: List[int] = []
+
+    current_node_index = num_nodes
+    for v in range(vehicles):
+        vehicle_nights = list(range(current_node_index, current_node_index + num_overnights))
+        current_node_index += num_overnights
+        vehicle_mornings = list(range(current_node_index, current_node_index + num_overnights))
+        current_node_index += num_overnights
+
+        night_nodes_by_vehicle.append(vehicle_nights)
+        morning_nodes_by_vehicle.append(vehicle_mornings)
+        all_night_nodes.extend(vehicle_nights)
+        all_morning_nodes.extend(vehicle_mornings)
+
+    total_nodes = num_nodes + len(all_night_nodes) + len(all_morning_nodes)
+
+    starts = [0] * vehicles
+    ends = [0] * vehicles
+
+    manager = pywrapcp.RoutingIndexManager(total_nodes, vehicles, starts, ends)
+    model_parameters = pywrapcp.DefaultRoutingModelParameters()
+    model_parameters.max_callback_cache_size = 2 * total_nodes * total_nodes
+    routing = pywrapcp.RoutingModel(manager, model_parameters)
+
+    def _matrix_index(node: int) -> int:
+        return node if node < num_nodes else 0
+
+    def transit_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        infinite_time = day_end * 1000
+
+        if all_morning_nodes and from_node in all_night_nodes and to_node not in all_morning_nodes:
+            return infinite_time
+        if from_node in all_morning_nodes and to_node in all_night_nodes:
+            return infinite_time
+        if from_node in all_morning_nodes and to_node in all_morning_nodes:
+            return infinite_time
+        if from_node in all_night_nodes and to_node in all_night_nodes:
+            return infinite_time
+
+        return int(base_matrix[_matrix_index(from_node)][_matrix_index(to_node)])
+
+    transit_callback_index = routing.RegisterTransitCallback(transit_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+    def time_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        service_time = 0
+        if from_node in all_night_nodes:
+            service_time = overnight_time
+        elif from_node in all_morning_nodes or from_node == 0:
+            service_time = 0
+        else:
+            service_time = service_times[_matrix_index(from_node)]
+
+        return int(base_matrix[_matrix_index(from_node)][_matrix_index(to_node)] + service_time)
+
+    time_callback_index = routing.RegisterTransitCallback(time_callback)
+    routing.AddDimension(
+        time_callback_index,
+        slack_max=(day_end - day_start),
+        capacity=day_end,
+        fix_start_cumul_to_zero=False,
+        name='Time')
+
+    time_dimension = routing.GetDimensionOrDie('Time')
+    for v in range(vehicles):
+        sv_start = time_dimension.SlackVar(routing.Start(v))
+        if sv_start is not None:
+            sv_start.SetValue(0)
+
+    for node in range(1, num_nodes):
+        index = manager.NodeToIndex(node)
+        time_dimension.CumulVar(index).SetRange(day_start, day_end)
+    for node in all_morning_nodes:
+        index = manager.NodeToIndex(node)
+        time_dimension.CumulVar(index).SetRange(day_start, day_start)
+    for node in all_night_nodes:
+        index = manager.NodeToIndex(node)
+        time_dimension.CumulVar(index).SetRange(day_end, day_end)
+
+    routing.AddConstantDimension(1, total_nodes + 1, True, "Counting")
+    count_dimension = routing.GetDimensionOrDie('Counting')
+
+    for v in range(vehicles):
+        for node in morning_nodes_by_vehicle[v] + night_nodes_by_vehicle[v]:
+            routing.SetAllowedVehiclesForIndex([v], manager.NodeToIndex(node))
+
+    def day_transit_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        return 1 if from_node in all_night_nodes else 0
+
+    day_cb = routing.RegisterTransitCallback(day_transit_callback)
+    routing.AddDimension(day_cb, 0, days, True, "Day")
+    day_dim = routing.GetDimensionOrDie("Day")
+
+    for v in range(vehicles):
+        day_dim.CumulVar(routing.Start(v)).SetRange(0, 0)
+        for d, m in enumerate(morning_nodes_by_vehicle[v]):
+            day_dim.CumulVar(manager.NodeToIndex(m)).SetRange(d, d)
+        for d, n in enumerate(night_nodes_by_vehicle[v]):
+            day_dim.CumulVar(manager.NodeToIndex(n)).SetRange(d, d)
+
+    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+    search_parameters.first_solution_strategy = (routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION)
+    if guided_local_search:
+        search_parameters.local_search_metaheuristic = (routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
+    search_parameters.time_limit.seconds = timelimit_seconds
+    search_parameters.log_search = debug
+
+    t_setup = time.perf_counter()
+    print(f"[TIMING] Setup time: {t_setup - t0:.3f} s")
+    print("Solver started...")
+    t1 = time.perf_counter()
+    solution = routing.SolveWithParameters(search_parameters)
+    t2 = time.perf_counter()
+    print(f"[TIMING] Solve time: {t2 - t1:.3f} s")
+
+    if not solution:
+        print("no solution found")
+        return None
+
+    print("solution found.  Objective value is ", solution.ObjectiveValue())
+    result = {
+        'Dropped': [],
+        'Scheduled': [],
+    }
+    print('Scheduled Routes:')
+    print('[node, order, min time, max time]')
+    for vehicle_id in range(vehicles):
+        print(f"========= Vehicle {vehicle_id} =========")
+        vehicle_schedule = []
+        index = routing.Start(vehicle_id)
+        if routing.IsEnd(index):
+            print("Vehicle not used.")
+            continue
+
+        while not routing.IsEnd(index):
+            cumultime = time_dimension.CumulVar(index)
+            count = count_dimension.CumulVar(index)
+            node = manager.IndexToNode(index)
+            node_str = node
+            if node in all_night_nodes:
+                node_str = 'Overnight at {}, dummy for 1'.format(node)
+            elif node in all_morning_nodes:
+                node_str = 'Starting day at {}, dummy for 1'.format(node)
+
+            mintime = timedelta(seconds=solution.Min(cumultime))
+            maxtime = timedelta(seconds=solution.Max(cumultime))
+            line_data = [node_str, solution.Value(count), timedelta_format(mintime), timedelta_format(maxtime)]
+            print(line_data)
+            vehicle_schedule.append(line_data)
+            index = solution.Value(routing.NextVar(index))
+
+        cumultime = time_dimension.CumulVar(index)
+        count = count_dimension.CumulVar(index)
+        mintime = timedelta(seconds=solution.Min(cumultime))
+        maxtime = timedelta(seconds=solution.Max(cumultime))
+        line_data = [manager.IndexToNode(index), solution.Value(count), timedelta_format(mintime), timedelta_format(maxtime)]
+        print(line_data)
+        vehicle_schedule.append(line_data)
+        result['Scheduled'].append(vehicle_schedule)
+
+    print('Dropped')
+    print(result['Dropped'])
+    print('Scheduled')
+    return result
 
 def main():
   
