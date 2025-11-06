@@ -21,7 +21,10 @@ import re
 
 from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
+from pyhelpers.geocode import forward_geocode
+from pyhelpers.osrm import get_osrm_time_matrix
 
+import json
 
 _TIME_SLOT_PATTERN = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})$")
 
@@ -183,9 +186,12 @@ class VRPProblemBuilder:
         the actual travel time computation (distance API, historical data, ...)
         is implemented in future commits.
         """
-
+        coords = [forward_geocode(adr) for adr in addresses]
+        print(coords)
+        return (get_osrm_time_matrix(coords))
         size = len(addresses)
-        return [[0 for _ in range(size)] for _ in range(size)]
+        ret
+        #return [[0 for _ in range(size)] for _ in range(size)]
 
     def build_worker_constraints(self, workers: Iterable[Workerclass]) -> List[WorkerConstraints]:
         return [WorkerConstraints.from_worker(worker) for worker in workers]

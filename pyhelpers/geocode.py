@@ -11,7 +11,7 @@ def forward_geocode(address):
     response = requests.get(url, params=params)
     data = response.json()
     if data["features"]:
-        print(data["features"])
+        # print(data["features"])
         return data["features"][0]["geometry"]["coordinates"]
 
     else:

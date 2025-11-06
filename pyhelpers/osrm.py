@@ -20,8 +20,10 @@ def get_osrm_time_matrix(coordinates):
     
     # OSRM API endpoint for the table service (time matrix)
     # Using the public demo server. For production, you should run your own OSRM server.
-    url = f"http://router.project-osrm.org/table/v1/driving/{locations}"
-
+    #url = f"http://router.project-osrm.org/table/v1/driving/{locations}"
+    url = f"http://127.0.0.1:5022/table/v1/driving/{locations}" #locally hosted osrm
+    #print(url)
+    # http://router.project-osrm.org/table/v1/driving/13.40791,57.786057;13.442746,57.800638;13.526416,57.600581;13.429959,57.75
     try:
         response = requests.get(url)
         response.raise_for_status()  # Raise an exception for bad status codes
@@ -38,3 +40,14 @@ def get_osrm_time_matrix(coordinates):
         print(f"An error occurred: {e}")
         return None
 
+def main():
+    coords = [
+    [13.40791, 57.786057],
+    [13.442746, 57.800638],
+    [13.526416, 57.600581],
+    [13.429959, 57.750000]]
+    
+    print(get_osrm_time_matrix(coords))
+    
+if __name__== "__main__":
+    main()

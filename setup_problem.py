@@ -27,9 +27,16 @@ _LEGACY_STAFF_DIR = (
 depot_adr = "Storgatan 69 ,523 31 ULRICEHAMN, Sweden"
 # dummy todays date
 todays_date = datetime(2025, 9, 1)
+scheduling_horizon = 1 
+
+bokningsfrekvens_dict ={"Engångsjobb" : 0,
+                        "Varje vecka" :1,
+                        "Varannan vecka":2,
+                        "Var tredje vecka":3,
+                        "Var fjärde vecka":4}
 
 
-def retrieve_jobs(todays_date, horizon_days=4):
+def retrieve_jobs(todays_date, horizon_days=scheduling_horizon):
     """
     Read the Excel file in the data directory and return rows where the 'Datum' column
     falls between `todays_date` and `todays_date + horizon_days` (inclusive).
@@ -66,6 +73,7 @@ def retrieve_jobs(todays_date, horizon_days=4):
     start = pd.to_datetime(todays_date).normalize()
     print(start)
     end = (start + pd.Timedelta(days=horizon_days)).normalize()
+    print(end)
 
     mask = (df["Datum"] >= start) & (df["Datum"] <= end)
     print (f"Retrieved {mask.sum()} jobs between {start.date()} and {end.date()}.")
@@ -111,6 +119,9 @@ def format_jobs(jobs_df):
             service_time = 1  # fallback to 1 hour if parsing fails
 
         column_values = {column: row.get(column) for column in first_sixteen_columns}
+        
+        freq_num = bokningsfrekvens_dict[column_values.get("Bokningsfrekvens")]
+        
 
         job = Jobclass(
             job_id=job_id,
@@ -129,7 +140,7 @@ def format_jobs(jobs_df):
             billing_reference=column_values.get("Fakt.bes."),
             job_type=column_values.get("Typ"),
             status=column_values.get("Status"),
-            booking_frequency=column_values.get("Bokningsfrekvens"),
+            booking_frequency=freq_num,
             service_time=service_time,
         )
         job_list.append(job)
@@ -184,7 +195,7 @@ def build_vrp_problem(job_list, worker_list):
     return builder.build_problem(jobs=job_list, workers=worker_list, depot_address=depot_adr)
 
 if __name__ == "__main__":
-    jobs_df = retrieve_jobs(todays_date, horizon_days=4)
+    jobs_df = retrieve_jobs(todays_date, horizon_days=1)
     job_class_list = format_jobs(jobs_df)
     workers_df = retrieve_workers()
     worker_class_list = format_workers(workers_df)
@@ -198,3 +209,4 @@ if __name__ == "__main__":
             matrix=len(vrp_problem.time_matrix),
         )
     )
+    
