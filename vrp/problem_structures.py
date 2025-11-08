@@ -107,7 +107,7 @@ class TimeWindow:
                 morning_start = max(day_start_min, 6 * 60)
                 morning_end = min(day_end_min, midday)
                 afternoon_start = max(day_start_min, midday)
-                afternoon_end = min(day_end_min, 15 * 60)
+                afternoon_end = min(day_end_min, 16 * 60)
 
                 if start_min < midday and morning_end > morning_start:
                     start_min, end_min = morning_start, morning_end

@@ -6,6 +6,7 @@ from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
 from vrp.problem_structures import VRPProblemBuilder
 from pyhelpers.day_indexing import weekday_name_sv
+from vrp_multiple_days import solve_vrp_problem_definition
 
 # sets up the optimization problem for multiple days for real data
 # prefer the data that ships with the repository but still keep backward
@@ -217,4 +218,5 @@ if __name__ == "__main__":
             matrix=len(vrp_problem.time_matrix),
         )
     )
+    solve_vrp_problem_definition(vrp_problem, days = scheduling_horizon )
     

@@ -19,14 +19,13 @@ def timedelta_format(td):
 def solve_vrp_problem_definition(
     problem: VRPProblemDefinition,
     *,
-    days: int = 2,
+    days : int =3,
     start_hour: int = 6,
-    end_hour: int = 18,
+    end_hour: int = 16,
     service_fallback_minutes: int = 120,
     timelimit_seconds: int = 30,
     debug: bool = False,
     guided_local_search: bool = True,
-    vehicles: int = 4,
 ):
     """Solve the multi-day VRP instance defined by ``problem``.
 
@@ -35,26 +34,23 @@ def solve_vrp_problem_definition(
     modules can easily feed data without going through the ``time_details``
     helper module.
     """
+    vehicles = len(VRPProblemDefinition.worker_constraints)
 
     if days <= 0:
         raise ValueError("days must be a positive integer")
     if vehicles <= 0:
         raise ValueError("vehicles must be a positive integer")
 
-    day_start = start_hour * 3600
-    day_end = end_hour * 3600
+    day_start = start_hour * 60
+    day_end = end_hour * 60
     base_matrix = problem.time_matrix
-    if not base_matrix:
-        raise ValueError("time_matrix must not be empty")
     matrix_size = len(base_matrix)
-    if any(len(row) != matrix_size for row in base_matrix):
-        raise ValueError("time_matrix must be square")
 
     service_fallback = max(service_fallback_minutes, 0) * 60
     service_times: List[int] = [0] * matrix_size
     for node in problem.nodes:
         if 0 <= node.node_id < matrix_size:
-            duration = int(node.service_duration.total_seconds())
+            duration = int(node.service_duration)
             service_times[node.node_id] = duration if duration > 0 else service_fallback
 
     for idx in range(1, matrix_size):
