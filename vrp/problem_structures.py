@@ -65,9 +65,8 @@ class TimeWindow:
         default_start_min: Optional[int] = None,
         duration_min: int = 5,
     ) -> "TimeWindow":
-        base_date = _normalise_date(job.date),
+        base_date = _normalise_date(job.date)
         day_idx = day_to_index(target_day=job.day, start_day=start_day) if base_date else None
-        print(job.day, start_day, day_idx)
         start_min: Optional[int] = None
 
         # Prefer explicit time_slot → take only the START time (HH:MM) as the anchor
@@ -84,20 +83,43 @@ class TimeWindow:
         if start_min is None or day_idx is None:
             return cls(day=day_idx, start=None, end=None)
         
-        if allow_diff:
-            if job.service_type in ("Hemstäd ____", "Prova-på-hemstäd"):
-                # if before 12, put window 06-12, or 
-                # if after 12, put window 12-15
-                # hemstäd can be rescheduled within afternoon, or rescheduled within 
-                pass
-            else:
-                pass
-                # other tasks can be rescheduled within the full day
-            # logic for extending allowed times in case of diff
-            #print
-            pass
-
         end_min = start_min + int(duration_min)
+
+        if allow_diff:
+            day_start_min = (
+                _minutes_from_midnight(default_day_start)
+                if isinstance(default_day_start, time)
+                else start_min
+            )
+            day_end_min = (
+                _minutes_from_midnight(default_day_end)
+                if isinstance(default_day_end, time)
+                else end_min
+            )
+
+            # Clamp within same-day bounds
+            day_start_min = max(0, min(day_start_min, 1439))
+            day_end_min = max(day_start_min + 1, min(day_end_min, 1440))
+
+            service_type = str(getattr(job, "service_type", "") or "").lower()
+            if "hemstäd" in service_type:
+                midday = 12 * 60
+                morning_start = max(day_start_min, 6 * 60)
+                morning_end = min(day_end_min, midday)
+                afternoon_start = max(day_start_min, midday)
+                afternoon_end = min(day_end_min, 15 * 60)
+
+                if start_min < midday and morning_end > morning_start:
+                    start_min, end_min = morning_start, morning_end
+                elif afternoon_end > afternoon_start:
+                    start_min, end_min = afternoon_start, afternoon_end
+                else:
+                    start_min, end_min = day_start_min, day_end_min
+            else:
+                start_min, end_min = day_start_min, day_end_min
+
+            if end_min <= start_min:
+                end_min = min(1440, start_min + int(duration_min))
 
         # Enforce same-day (no cross-midnight)
         if not (0 <= start_min <= 1439) or end_min > 1440:
