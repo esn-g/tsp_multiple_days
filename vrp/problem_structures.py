@@ -23,65 +23,103 @@ from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
 from pyhelpers.geocode import forward_geocode
 from pyhelpers.osrm import get_osrm_time_matrix
+from pyhelpers.day_indexing import day_to_index
 
 import json
 
 _TIME_SLOT_PATTERN = re.compile(r"^(?P<start>\d{1,2}:\d{2})\s*-\s*(?P<end>\d{1,2}:\d{2})$")
 
+def _minutes_from_midnight(t: time) -> int:
+    return t.hour * 60 + t.minute  # seconds ignored by design
+
+def _parse_time_hhmm(s: str) -> time:
+    h, m = map(int, s.split(":"))
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("Hour/minute out of range")
+    return time(hour=h, minute=m)
+
+def _normalise_date(d) -> Optional[datetime.date]:
+    # Your existing normaliser; stubbed minimal here:
+    if d is None:
+        return None
+    if isinstance(d, datetime):
+        return d.date()
+    return d  # assume it's already a date
 
 @dataclass
 class TimeWindow:
-    """Represents the time interval a job may start.
-
-    The start and end attributes are stored as ``datetime`` instances.  Using
-    concrete datetimes (instead of just hour/minute pairs) simplifies further
-    calculations down the road because the solver typically expects absolute
-    times.  When the job does not provide enough information to build a
-    datetime, the fields are set to ``None`` and callers can fill in sensible
-    defaults later.
-    """
-
-    start: Optional[datetime]
-    end: Optional[datetime]
+    """Same-day window using minutes-from-midnight. `end = start + duration_min`."""
+    day: Optional[int]          # Monday=0 ... Sunday=6
+    start: Optional[int]        # minutes from midnight
+    end: Optional[int]          # minutes from midnight (start + duration)
 
     @classmethod
     def from_job(
-        cls, job: Jobclass, *, default_day_start: Optional[time] = None, default_day_end: Optional[time] = None
+        cls,
+        job: "Jobclass",
+        *,
+        start_day: Optional[str] =None,
+        allow_diff: Optional[bool] =False,
+        default_day_start: Optional[time] = None,
+        default_day_end: Optional[time] = None,
+        default_start_min: Optional[int] = None,
+        duration_min: int = 5,
     ) -> "TimeWindow":
-        """Create a :class:`TimeWindow` from a :class:`Jobclass` instance.
+        base_date = _normalise_date(job.date),
+        day_idx = day_to_index(target_day=job.day, start_day=start_day) if base_date else None
+        print(job.day, start_day, day_idx)
+        start_min: Optional[int] = None
 
-        Parameters
-        ----------
-        job:
-            The job whose ``time_slot`` and ``date`` fields are used.
-        default_day_start / default_day_end:
-            Optional fallbacks when a job does not specify a time slot.  When
-            provided the returned window will be anchored to the job's day
-            (or ``todays_date`` fallback) using these defaults.
-        """
+        # Prefer explicit time_slot → take only the START time (HH:MM) as the anchor
+        if getattr(job, "time_slot", None):
+            m = _TIME_SLOT_PATTERN.match(str(job.time_slot).strip())
+            if m:
+                start_min = _minutes_from_midnight(_parse_time_hhmm(m.group("start")))
 
-        if job.time_slot:
-            match = _TIME_SLOT_PATTERN.match(str(job.time_slot).strip())
-            if match:
-                start_str = match.group("start")
-                end_str = match.group("end")
-                try:
-                    base_date = _normalise_date(job.date)
-                    start_dt = datetime.combine(base_date, _parse_time(start_str)) if base_date else None
-                    end_dt = datetime.combine(base_date, _parse_time(end_str)) if base_date else None
-                    if start_dt and end_dt and end_dt < start_dt:
-                        # Some schedules cross midnight; add 24h to the end in this scenario.
-                        end_dt += timedelta(days=1)
-                    return cls(start=start_dt, end=end_dt)
-                except ValueError:
-                    # Fall back to default handling below.
-                    pass
+        # Fallback to provided default start (already in minutes)
+        if start_min is None and default_start_min is not None:
+            start_min = int(default_start_min)
 
-        base_date = _normalise_date(job.date)
-        start_dt = datetime.combine(base_date, default_day_start) if base_date and default_day_start else None
-        end_dt = datetime.combine(base_date, default_day_end) if base_date and default_day_end else None
-        return cls(start=start_dt, end=end_dt)
+        # If still unknown or no date to anchor day, return empty window
+        if start_min is None or day_idx is None:
+            return cls(day=day_idx, start=None, end=None)
+        
+        if allow_diff:
+            if job.service_type in ("Hemstäd ____", "Prova-på-hemstäd"):
+                # if before 12, put window 06-12, or 
+                # if after 12, put window 12-15
+                # hemstäd can be rescheduled within afternoon, or rescheduled within 
+                pass
+            else:
+                pass
+                # other tasks can be rescheduled within the full day
+            # logic for extending allowed times in case of diff
+            #print
+            pass
 
+        end_min = start_min + int(duration_min)
+
+        # Enforce same-day (no cross-midnight)
+        if not (0 <= start_min <= 1439) or end_min > 1440:
+            # invalid (e.g., start=23:58 with duration 5 → 1443)
+            return cls(day=day_idx, start=None, end=None)
+
+        return cls(day=day_idx, start=start_min, end=end_min)
+
+    @classmethod
+    def from_datetime(
+        cls,
+        dt: datetime,
+        *,
+        duration_min: int = 5,
+    ) -> "TimeWindow":
+        day_idx = dt.weekday()
+        start_min = dt.hour * 60 + dt.minute
+        end_min = start_min + int(duration_min)
+        
+        if end_min > 1440:
+            return cls(day=day_idx, start=None, end=None)
+        return cls(day=day_idx, start=start_min, end=end_min)
 
 @dataclass
 class VRPNode:
@@ -153,17 +191,21 @@ class VRPProblemBuilder:
         *,
         default_day_start: time = time(hour=6),
         default_day_end: time = time(hour=18),
+        
     ) -> None:
         self._default_day_start = default_day_start
         self._default_day_end = default_day_end
 
-    def build_nodes(self, jobs: Iterable[Jobclass]) -> List[VRPNode]:
+    def build_nodes(self, start_day, allow_diff, jobs: Iterable[Jobclass]) -> List[VRPNode]:
         nodes: List[VRPNode] = []
         for idx, job in enumerate(jobs, start=1):  # node_id starts at 1 because 0 is usually the depot
             time_window = TimeWindow.from_job(
                 job,
                 default_day_start=self._default_day_start,
                 default_day_end=self._default_day_end,
+                start_day = start_day,
+                allow_diff= allow_diff
+                
             )
             service_duration = _hours_to_timedelta(job.service_time)
             address = job.get_job_adress() if hasattr(job, "get_job_adress") else job.adress
@@ -187,11 +229,7 @@ class VRPProblemBuilder:
         is implemented in future commits.
         """
         coords = [forward_geocode(adr) for adr in addresses]
-        print(coords)
         return (get_osrm_time_matrix(coords))
-        size = len(addresses)
-        ret
-        #return [[0 for _ in range(size)] for _ in range(size)]
 
     def build_worker_constraints(self, workers: Iterable[Workerclass]) -> List[WorkerConstraints]:
         return [WorkerConstraints.from_worker(worker) for worker in workers]
@@ -202,8 +240,10 @@ class VRPProblemBuilder:
         jobs: Iterable[Jobclass],
         workers: Iterable[Workerclass],
         depot_address: str,
+        start_weekday: str,
+        allow_diff: bool,
     ) -> VRPProblemDefinition:
-        nodes = self.build_nodes(jobs)
+        nodes = self.build_nodes(jobs=jobs,start_day=start_weekday,allow_diff=allow_diff)
         addresses = [depot_address] + [node.address for node in nodes]
         time_matrix = self.build_time_matrix(addresses)
         worker_constraints = self.build_worker_constraints(workers)

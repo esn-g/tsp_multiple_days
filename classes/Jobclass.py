@@ -17,7 +17,7 @@ class Jobclass:
         time_slot,
         break_minutes,
         staff_name,
-        service_name,
+        service_type,
         work_address,
         work_postcode,
         project_number,
@@ -36,7 +36,7 @@ class Jobclass:
         self.time_slot = time_slot
         self.break_minutes = break_minutes
         self.staff_name = staff_name
-        self.service_name = service_name
+        self.service_type = service_type
         self.work_address = work_address
         self.work_postcode = work_postcode
         self.project_number = project_number
@@ -51,7 +51,7 @@ class Jobclass:
 
         # Fields kept for backwards compatibility with earlier iterations of the
         # repository code base.
-        self.description = f"{self.service_name} {self.project_number}".strip()
+        self.description = f"{self.service_type} {self.project_number}".strip()
         self.adress = ", ".join(
             part for part in [str(self.work_address).strip(), str(self.work_postcode).strip()]
             if part and part.lower() != "nan"
@@ -64,7 +64,7 @@ class Jobclass:
     def __repr__(self):
         return (
             "Job_order("
-            f"{self.job_id}, {self.service_name}, {self.adress}, {self.service_time}, "
+            f"{self.job_id}, {self.service_type}, {self.adress}, {self.service_time}, "
             f"{self.manpower_required}, {self.day_required}, {self.time_slot_required}, {self.periodicity}"
             ")"
         )

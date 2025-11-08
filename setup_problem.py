@@ -5,6 +5,7 @@ from pathlib import Path
 from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
 from vrp.problem_structures import VRPProblemBuilder
+from pyhelpers.day_indexing import weekday_name_sv
 
 # sets up the optimization problem for multiple days for real data
 # prefer the data that ships with the repository but still keep backward
@@ -34,6 +35,8 @@ bokningsfrekvens_dict ={"Engångsjobb" : 0,
                         "Varannan vecka":2,
                         "Var tredje vecka":3,
                         "Var fjärde vecka":4}
+
+
 
 
 def retrieve_jobs(todays_date, horizon_days=scheduling_horizon):
@@ -78,7 +81,7 @@ def retrieve_jobs(todays_date, horizon_days=scheduling_horizon):
     mask = (df["Datum"] >= start) & (df["Datum"] <= end)
     print (f"Retrieved {mask.sum()} jobs between {start.date()} and {end.date()}.")
     return df.loc[mask].copy()
-
+    
 def format_jobs(jobs_df):
     """Convert DataFrame rows to Jobclass instances with calculated service times."""
 
@@ -114,6 +117,7 @@ def format_jobs(jobs_df):
                 start_time = pd.to_datetime(f"{base_date} {start_str.strip()}")
                 end_time = pd.to_datetime(f"{base_date} {end_str.strip()}")
                 service_time = (end_time - start_time).total_seconds() / 3600  # hours
+                # job_start =start_time.hour * 60 + start_time.minute # start time for use with time window in minutes from midnight
         except (ValueError, AttributeError) as e:
             print(f"Warning: Could not parse time for job {job_id}: {e}")
             service_time = 1  # fallback to 1 hour if parsing fails
@@ -130,7 +134,7 @@ def format_jobs(jobs_df):
             time_slot=column_values.get("Tid"),
             break_minutes=column_values.get("Rast(min)"),
             staff_name=column_values.get("Personal"),
-            service_name=column_values.get("Tjänst"),
+            service_type=column_values.get("Tjänst"),
             work_address=column_values.get("Arb.adress"),
             work_postcode=column_values.get("Arb.adress postnr."),
             project_number=column_values.get("Proj.nr"),
@@ -142,6 +146,7 @@ def format_jobs(jobs_df):
             status=column_values.get("Status"),
             booking_frequency=freq_num,
             service_time=service_time,
+            
         )
         job_list.append(job)
 
@@ -188,20 +193,23 @@ def format_workers(workers_df):
     return worker_list
 
 
-def build_vrp_problem(job_list, worker_list):
+def build_vrp_problem(job_list, worker_list, start_weekday, allow_diff):
     """Create a :class:`VRPProblemDefinition` for the current data set."""
 
     builder = VRPProblemBuilder()
-    return builder.build_problem(jobs=job_list, workers=worker_list, depot_address=depot_adr)
+    return builder.build_problem(jobs=job_list, workers=worker_list, depot_address=depot_adr, start_weekday=start_weekday, allow_diff=allow_diff)
 
 if __name__ == "__main__":
-    jobs_df = retrieve_jobs(todays_date, horizon_days=1)
+    start_weekday = weekday_name_sv(todays_date)
+    jobs_df = retrieve_jobs(todays_date, horizon_days=0)
     job_class_list = format_jobs(jobs_df)
     workers_df = retrieve_workers()
     worker_class_list = format_workers(workers_df)
+    a_job = job_class_list[2]
+    print(a_job.time_slot)
 
-    vrp_problem = build_vrp_problem(job_class_list, worker_class_list)
-
+    vrp_problem = build_vrp_problem(job_class_list, worker_class_list, start_weekday=start_weekday, allow_diff=True)
+    print(vrp_problem.nodes[1])
     print(
         "Prepared {jobs} jobs, {workers} workers and a {matrix}x{matrix} time matrix".format(
             jobs=len(vrp_problem.nodes),

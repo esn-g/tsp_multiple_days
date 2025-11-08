@@ -15,12 +15,19 @@ def index_to_day(start_day, index):
     target_index = (start_index + index) % 5
     return days[target_index]
 
+def weekday_name_sv(dt):
+    SV_DAYS = ["måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag"]
+    return SV_DAYS[dt.weekday()]  # weekday(): Mon=0...Sun=6
+
 def main():
     # Example usage:
-    start_day = 'friday'
-    target_day = 'tuesday'
+    start_day = 'fredag'
+    target_day = 'torsdag'
     index = day_to_index(start_day, target_day)
     print(f"The index of {target_day} when starting from {start_day} is: {index}")
     
 if __name__ == "__main__":
     main()
+    
+    
+
