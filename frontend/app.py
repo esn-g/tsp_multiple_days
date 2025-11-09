@@ -1,0 +1,418 @@
+"""Interactive Streamlit application for multi-day scheduling optimisation.
+
+The UI exposes two complementary modes:
+
+* **Schedule review** – mirror of the existing ``setup_problem`` workflow where
+  the user selects job and staff Excel files, chooses the scheduling horizon
+  and runs the optimiser on the imported data.
+* **Scenario builder** – allows users to create additional jobs and workers
+  directly in the browser before running the optimisation.  This is useful for
+  what-if analysis without having to edit the source spreadsheets.
+
+Both modes present the original schedule as well as the optimised assignment on
+worker/time axes so the impact of the optimisation can be inspected visually.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+
+from classes.Jobclass import Jobclass
+from classes.Workerclass import Workerclass
+from pyhelpers.day_indexing import weekday_name_sv
+from setup_problem import format_jobs, format_workers
+from vrp.problem_structures import VRPProblemBuilder, VRPProblemDefinition
+from vrp_multiple_days import solve_vrp_problem_definition
+
+# ---------------------------------------------------------------------------
+# Helper data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ScheduleAssignment:
+    """Representation of a solved job assignment for plotting purposes."""
+
+    worker_name: str
+    day_offset: int
+    start_minutes: int
+    end_minutes: int
+    job: Jobclass
+
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_JOBS_PATH = Path(__file__).resolve().parents[1] / "Kund1" / "september_clean" / "september_arbete.xlsx"
+_DEFAULT_STAFF_PATH = Path(__file__).resolve().parents[1] / "Kund1" / "anställda" / "September_staff_details.xlsx"
+
+
+class SafeVRPProblemBuilder(VRPProblemBuilder):
+    """Problem builder that gracefully falls back when travel data is missing."""
+
+    def build_time_matrix(self, addresses: Sequence[str]) -> List[List[int]]:
+        try:
+            matrix = super().build_time_matrix(addresses)
+        except Exception:
+            matrix = None
+
+        if not matrix:
+            size = len(addresses)
+            # Use a simple constant travel time to keep the solver feasible.
+            return [[0 if i == j else 15 for j in range(size)] for i in range(size)]
+
+        # ``get_osrm_time_matrix`` returns minutes already – ensure structure.
+        if isinstance(matrix, list) and all(isinstance(row, list) for row in matrix):
+            return matrix
+
+        size = len(addresses)
+        return [[0 if i == j else 15 for j in range(size)] for i in range(size)]
+
+
+def _ensure_job_id(job: Jobclass, index: int) -> str:
+    return str(job.job_id if getattr(job, "job_id", None) not in (None, "") else f"job-{index}")
+
+
+def _parse_time_slot(job: Jobclass) -> Optional[tuple[datetime, datetime]]:
+    if not job.date:
+        return None
+
+    job_date = pd.to_datetime(job.date).to_pydatetime().date()
+    time_slot = getattr(job, "time_slot", None)
+    if isinstance(time_slot, str) and "-" in time_slot:
+        start_raw, end_raw = [part.strip() for part in time_slot.split("-", 1)]
+        try:
+            start_dt = datetime.combine(job_date, datetime.strptime(start_raw, "%H:%M").time())
+            end_dt = datetime.combine(job_date, datetime.strptime(end_raw, "%H:%M").time())
+            if end_dt <= start_dt:
+                end_dt = start_dt + timedelta(hours=float(getattr(job, "service_time", 1) or 1))
+            return start_dt, end_dt
+        except ValueError:
+            pass
+
+    service_hours = float(getattr(job, "service_time", 0) or 0)
+    if service_hours <= 0:
+        return None
+
+    default_start = datetime.combine(job_date, time(hour=8))
+    default_end = default_start + timedelta(hours=service_hours)
+    return default_start, default_end
+
+
+def _jobs_dataframe(jobs: Sequence[Jobclass]) -> pd.DataFrame:
+    rows = []
+    for idx, job in enumerate(jobs):
+        parsed = _parse_time_slot(job)
+        if not parsed:
+            continue
+        start_dt, end_dt = parsed
+        rows.append(
+            {
+                "job_id": _ensure_job_id(job, idx),
+                "worker": getattr(job, "staff_name", "Unassigned") or "Unassigned",
+                "start": start_dt,
+                "end": end_dt,
+                "address": getattr(job, "adress", ""),
+                "service": getattr(job, "service_type", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _assignments_to_df(assignments: Iterable[ScheduleAssignment], base_date: date) -> pd.DataFrame:
+    rows = []
+    for idx, item in enumerate(assignments):
+        current_date = base_date + timedelta(days=item.day_offset)
+        start_dt = datetime.combine(current_date, time()) + timedelta(minutes=item.start_minutes)
+        end_dt = datetime.combine(current_date, time()) + timedelta(minutes=item.end_minutes)
+        rows.append(
+            {
+                "job_id": _ensure_job_id(item.job, idx),
+                "worker": item.worker_name,
+                "start": start_dt,
+                "end": end_dt,
+                "address": getattr(item.job, "adress", ""),
+                "service": getattr(item.job, "service_type", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _timeline_chart(df: pd.DataFrame, title: str) -> None:
+    if df.empty:
+        st.info(f"No schedulable entries available for '{title}'.")
+        return
+
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("start:T", title="Start time"),
+            x2=alt.X2("end:T", title="End time"),
+            y=alt.Y("worker:N", sort="-x", title="Worker"),
+            color=alt.Color("job_id:N", title="Job"),
+            tooltip=["job_id", "worker", alt.Tooltip("start:T", title="Start"), alt.Tooltip("end:T", title="End"), "service", "address"],
+        )
+        .properties(title=title, height=max(240, 40 * df["worker"].nunique()))
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _load_jobs(file: Optional[bytes], selected_date: date, horizon: int) -> List[Jobclass]:
+    if file is None:
+        if _DEFAULT_JOBS_PATH.exists():
+            df = pd.read_excel(_DEFAULT_JOBS_PATH, engine="openpyxl")
+        else:
+            return []
+    else:
+        df = pd.read_excel(file, engine="openpyxl")
+
+    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce").dt.date
+    start = selected_date
+    end = selected_date + timedelta(days=horizon)
+    mask = (df["Datum"] >= start) & (df["Datum"] <= end)
+    filtered = df.loc[mask].copy()
+    return format_jobs(filtered)
+
+
+def _load_workers(file: Optional[bytes]) -> List[Workerclass]:
+    if file is None:
+        if _DEFAULT_STAFF_PATH.exists():
+            df = pd.read_excel(_DEFAULT_STAFF_PATH, engine="openpyxl")
+        else:
+            return []
+    else:
+        df = pd.read_excel(file, engine="openpyxl")
+    return format_workers(df)
+
+
+def _build_problem(jobs: Sequence[Jobclass], workers: Sequence[Workerclass], *, depot: str, start_day: str, allow_diff: bool) -> Optional[VRPProblemDefinition]:
+    if not jobs or not workers:
+        return None
+    builder = SafeVRPProblemBuilder()
+    return builder.build_problem(jobs=jobs, workers=workers, depot_address=depot, start_weekday=start_day, allow_diff=allow_diff)
+
+
+def _collect_assignments(solution: Optional[dict]) -> List[ScheduleAssignment]:
+    assignments: List[ScheduleAssignment] = []
+    if not solution or not solution.get("assignments"):
+        return assignments
+
+    for entry in solution["assignments"]:
+        worker = entry.get("worker")
+        worker_name = getattr(worker, "name", None) if worker else None
+        if not worker_name:
+            worker_name = f"Vehicle {entry.get('vehicle_id', '-') }"
+        job_node = entry.get("job_node")
+        if not job_node:
+            continue
+        assignments.append(
+            ScheduleAssignment(
+                worker_name=worker_name,
+                day_offset=int(entry.get("day", 0)),
+                start_minutes=int(entry.get("start_min", 0)),
+                end_minutes=int(entry.get("end_min", entry.get("start_min", 0))),
+                job=job_node.job,
+            )
+        )
+    return assignments
+
+
+def _select_jobs_ui(jobs: Sequence[Jobclass]) -> List[Jobclass]:
+    if not jobs:
+        return []
+
+    labels = [f"{_ensure_job_id(job, idx)} · {getattr(job, 'description', '')}" for idx, job in enumerate(jobs)]
+    label_to_job = dict(zip(labels, jobs))
+    selected_labels = st.multiselect("Select jobs to include", labels, default=labels)
+    return [label_to_job[label] for label in selected_labels]
+
+
+def _select_workers_ui(workers: Sequence[Workerclass]) -> List[Workerclass]:
+    if not workers:
+        return []
+
+    labels = [getattr(worker, "name", f"Worker {idx}") or f"Worker {idx}" for idx, worker in enumerate(workers)]
+    label_to_worker = dict(zip(labels, workers))
+    selected_labels = st.multiselect("Select workers to include", labels, default=labels)
+    return [label_to_worker[label] for label in selected_labels]
+
+
+def _scenario_builder_forms() -> tuple[List[Jobclass], List[Workerclass]]:
+    jobs: List[Jobclass] = st.session_state.setdefault("manual_jobs", [])
+    workers: List[Workerclass] = st.session_state.setdefault("manual_workers", [])
+
+    with st.expander("Add a worker"):
+        with st.form("add_worker_form"):
+            name = st.text_input("Name")
+            has_license = st.checkbox("Has driving licence", value=True)
+            employee_number = st.text_input("Employee number")
+            days_per_week = st.number_input("Days per week", min_value=0.0, value=5.0, step=0.5)
+            hours_per_week = st.number_input("Hours per week", min_value=0.0, value=40.0, step=1.0)
+            employment_percentage = st.number_input("Employment %", min_value=0.0, value=100.0, step=5.0)
+            employment_terms = st.text_input("Employment terms", value="Full-time")
+            salary_type = st.text_input("Salary type", value="Monthly")
+            submitted = st.form_submit_button("Add worker")
+            if submitted and name:
+                worker = Workerclass(
+                    name=name,
+                    has_driver_license=has_license,
+                    employee_number=employee_number,
+                    days_per_week=days_per_week,
+                    hours_per_week=hours_per_week,
+                    employment_percentage=employment_percentage,
+                    employment_terms=employment_terms,
+                    salary_type=salary_type,
+                )
+                workers.append(worker)
+                st.success(f"Added worker {name}")
+
+    with st.expander("Add a job"):
+        with st.form("add_job_form"):
+            job_id = st.text_input("Job identifier")
+            service_type = st.text_input("Service type", value="Hemstäd")
+            job_date = st.date_input("Date", value=date.today())
+            start_time = st.time_input("Start time", value=time(hour=8, minute=0))
+            duration_hours = st.number_input("Duration (hours)", min_value=0.25, value=2.0, step=0.25)
+            break_minutes = st.number_input("Break (minutes)", min_value=0, value=0, step=5)
+            staff_name = st.text_input("Preferred worker", help="Optional name of the worker currently assigned")
+            address = st.text_input("Address", value="Storgatan 1")
+            postcode = st.text_input("Postcode", value="523 31")
+            project_number = st.text_input("Project number", value="P-001")
+            project_name = st.text_input("Project name", value="Cleaning")
+            customer_number = st.text_input("Customer number", value="C-001")
+            customer_name = st.text_input("Customer name", value="Customer")
+            billing_reference = st.text_input("Billing reference", value="")
+            job_type = st.text_input("Job type", value="Standard")
+            status = st.text_input("Status", value="Planned")
+            booking_frequency = st.selectbox("Booking frequency", options=["Engångsjobb", "Varje vecka", "Varannan vecka", "Var tredje vecka", "Var fjärde vecka"], index=0)
+            submitted = st.form_submit_button("Add job")
+
+            if submitted:
+                start_dt = datetime.combine(job_date, start_time)
+                end_dt = start_dt + timedelta(hours=float(duration_hours))
+                time_slot = f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}"
+                job = Jobclass(
+                    job_id=job_id or f"manual-{len(jobs)+1}",
+                    day=weekday_name_sv(job_date),
+                    date=job_date,
+                    time_slot=time_slot,
+                    break_minutes=break_minutes,
+                    staff_name=staff_name,
+                    service_type=service_type,
+                    work_address=address,
+                    work_postcode=postcode,
+                    project_number=project_number,
+                    project_name=project_name,
+                    customer_number=customer_number,
+                    customer_name=customer_name,
+                    billing_reference=billing_reference,
+                    job_type=job_type,
+                    status=status,
+                    booking_frequency={
+                        "Engångsjobb": 0,
+                        "Varje vecka": 1,
+                        "Varannan vecka": 2,
+                        "Var tredje vecka": 3,
+                        "Var fjärde vecka": 4,
+                    }[booking_frequency],
+                    service_time=float(duration_hours),
+                )
+                jobs.append(job)
+                st.success(f"Added job {_ensure_job_id(job, len(jobs))}")
+
+    return jobs, workers
+
+
+# ---------------------------------------------------------------------------
+# Streamlit layout
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    st.set_page_config(page_title="Multi-day schedule optimiser", layout="wide")
+    st.title("Multi-day schedule optimiser")
+
+    mode = st.sidebar.radio("Mode", options=["Schedule review", "Scenario builder"], index=0)
+
+    todays_date = st.sidebar.date_input("Today's date", value=date.today())
+    horizon = st.sidebar.number_input("Horizon (days)", min_value=0, value=0, step=1)
+    allow_diff = st.sidebar.checkbox("Allow flexible day windows", value=True)
+    scheduling_days = st.sidebar.number_input("Optimisation days", min_value=1, value=max(1, horizon + 1))
+    start_hour = st.sidebar.slider("Day start (hour)", min_value=0, max_value=23, value=6)
+    end_hour = st.sidebar.slider("Day end (hour)", min_value=1, max_value=23, value=18)
+    service_fallback = st.sidebar.number_input("Fallback service (minutes)", min_value=1, value=120)
+    time_limit = st.sidebar.number_input("Solver time limit (s)", min_value=1, value=30)
+
+    depot_address = st.sidebar.text_input("Depot address", value="Storgatan 69 ,523 31 ULRICEHAMN, Sweden")
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Data sources")
+
+    jobs_file = None
+    staff_file = None
+    if mode == "Schedule review":
+        jobs_file = st.sidebar.file_uploader("Jobs Excel (.xlsx)", type=["xlsx"])
+        staff_file = st.sidebar.file_uploader("Staff Excel (.xlsx)", type=["xlsx"])
+
+    if mode == "Schedule review":
+        jobs = _load_jobs(jobs_file, todays_date, horizon)
+        workers = _load_workers(staff_file)
+    else:
+        jobs = []
+        workers = []
+
+    manual_jobs, manual_workers = _scenario_builder_forms() if mode == "Scenario builder" else ([], [])
+
+    jobs = list(jobs) + list(manual_jobs)
+    workers = list(workers) + list(manual_workers)
+
+    st.subheader("Imported schedule")
+    if jobs:
+        original_df = _jobs_dataframe(jobs)
+        st.dataframe(original_df)
+        _timeline_chart(original_df, "Original schedule")
+    else:
+        st.info("No jobs loaded yet. Add jobs in the scenario builder or provide an Excel file.")
+
+    st.subheader("Optimisation setup")
+    selected_jobs = _select_jobs_ui(jobs)
+    selected_workers = _select_workers_ui(workers)
+
+    if st.button("Run optimisation", disabled=not (selected_jobs and selected_workers)):
+        start_weekday = weekday_name_sv(todays_date)
+        problem = _build_problem(selected_jobs, selected_workers, depot=depot_address, start_day=start_weekday, allow_diff=allow_diff)
+        if not problem:
+            st.error("Unable to build optimisation problem – please ensure jobs and workers are selected.")
+        else:
+            solution = solve_vrp_problem_definition(
+                problem,
+                days=scheduling_days,
+                start_hour=start_hour,
+                end_hour=end_hour,
+                service_fallback_minutes=service_fallback,
+                timelimit_seconds=time_limit,
+                debug=False,
+            )
+
+            assignments = _collect_assignments(solution)
+            if not assignments:
+                st.warning("Solver did not produce any assignments.")
+            else:
+                st.success(f"Optimisation complete. Objective value: {solution.get('objective')}")
+                result_df = _assignments_to_df(assignments, todays_date)
+                st.dataframe(result_df)
+                _timeline_chart(result_df, "Optimised schedule")
+
+
+if __name__ == "__main__":
+    main()

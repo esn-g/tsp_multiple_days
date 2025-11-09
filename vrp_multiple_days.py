@@ -267,15 +267,20 @@ def solve_vrp_problem_definition(
     result = {
         'Dropped': [],
         'Scheduled': [],
+        'assignments': [],
+        'routes': [],
+        'objective': solution.ObjectiveValue(),
     }
     print('Scheduled Routes:')
     print('[node, order, min time, max time]')
     for vehicle_id in range(vehicles):
         print(f"========= Vehicle {vehicle_id} =========")
         vehicle_schedule = []
+        structured_route = []
         index = routing.Start(vehicle_id)
         if routing.IsEnd(index):
             print("Vehicle not used.")
+            result['routes'].append(structured_route)
             continue
 
         while not routing.IsEnd(index):
@@ -293,6 +298,36 @@ def solve_vrp_problem_definition(
             line_data = [node_str, solution.Value(count), _format_minutes(mintime), _format_minutes(maxtime)]
             print(line_data)
             vehicle_schedule.append(line_data)
+            day_value = solution.Value(day_dim.CumulVar(index))
+            arrival_minutes = solution.Value(cumultime)
+            structured_entry = {
+                "node": node,
+                "label": node_str,
+                "order": solution.Value(count),
+                "arrival_min": arrival_minutes,
+                "day": day_value,
+                "vehicle_id": vehicle_id,
+            }
+            structured_route.append(structured_entry)
+
+            if 0 < node <= len(problem.nodes):
+                assigned_worker = None
+                if vehicle_id < len(problem.worker_constraints):
+                    assigned_worker = problem.worker_constraints[vehicle_id].worker
+                job_node = problem.nodes[node - 1]
+                service_minutes = int(round(job_node.service_duration.total_seconds() / 60.0))
+                end_minutes = arrival_minutes + service_minutes
+                result['assignments'].append(
+                    {
+                        "vehicle_id": vehicle_id,
+                        "worker": assigned_worker,
+                        "job_node": job_node,
+                        "day": day_value,
+                        "start_min": arrival_minutes,
+                        "end_min": end_minutes,
+                    }
+                )
+
             index = solution.Value(routing.NextVar(index))
 
         cumultime = time_dimension.CumulVar(index)
@@ -303,6 +338,17 @@ def solve_vrp_problem_definition(
         print(line_data)
         vehicle_schedule.append(line_data)
         result['Scheduled'].append(vehicle_schedule)
+        structured_route.append(
+            {
+                "node": manager.IndexToNode(index),
+                "label": manager.IndexToNode(index),
+                "order": solution.Value(count),
+                "arrival_min": solution.Value(cumultime),
+                "day": solution.Value(day_dim.CumulVar(index)),
+                "vehicle_id": vehicle_id,
+            }
+        )
+        result['routes'].append(structured_route)
 
     print('Dropped')
     print(result['Dropped'])
