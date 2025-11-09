@@ -46,7 +46,7 @@ def solve_vrp_problem_definition(
     *,
     days : int =3,
     start_hour: int = 6,
-    end_hour: int = 16,
+    end_hour: int = 19,
     service_fallback_minutes: int = 120,
     timelimit_seconds: int = 30,
     debug: bool = False,
@@ -205,6 +205,7 @@ def solve_vrp_problem_definition(
 
     for node in problem.nodes:
         if node.time_window.day is not None:
+            print(node.time_window.day)
             day_dim.CumulVar(manager.NodeToIndex(node.node_id)).SetRange(node.time_window.day, node.time_window.day)
 
     def workload_callback(from_index, to_index):

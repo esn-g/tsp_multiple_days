@@ -85,7 +85,7 @@ def retrieve_jobs(todays_date, horizon_days=scheduling_horizon):
     
 def format_jobs(jobs_df):
     """Convert DataFrame rows to Jobclass instances with calculated service times."""
-
+    
     first_sixteen_columns = [
         "Dag",
         "Datum",
@@ -104,6 +104,8 @@ def format_jobs(jobs_df):
         "Status",
         "Bokningsfrekvens",
     ]
+    
+    print(len(jobs_df["Personal"].unique()))
 
     job_list = []
     for index, row in jobs_df.iterrows():
@@ -192,6 +194,55 @@ def format_workers(workers_df):
         worker_list.append(worker)
 
     return worker_list
+
+def _normalize_name(name):
+    if not isinstance(name, str):
+        return None
+    normalized = name.strip()
+    if not normalized:
+        return None
+    return normalized.casefold()
+
+
+def _select_workers_for_jobs(job_list, worker_list):
+    """Filter workers so only the unique staff present in the jobs remain."""
+
+    job_workers = set()
+    for job in job_list:
+        normalized_job_name = _normalize_name(getattr(job, "staff_name", None))
+        print(normalized_job_name)
+        if normalized_job_name is not None:
+            job_workers.add(normalized_job_name)
+
+    selected_workers = []
+    seen_workers = set()
+    for worker in worker_list:
+        normalized_name = _normalize_name(getattr(worker, "name", None))
+        if normalized_name is None:
+            continue
+        if normalized_name not in job_workers:
+            continue
+        if normalized_name in seen_workers:
+            continue
+        selected_workers.append(worker)
+        seen_workers.add(normalized_name)
+
+    return selected_workers
+
+
+def build_vrp_problem(job_list, worker_list, start_weekday, allow_diff):
+    """Create a :class:`VRPProblemDefinition` for the current data set."""
+
+    filtered_workers = _select_workers_for_jobs(job_list, worker_list)
+    builder = VRPProblemBuilder()
+    # return builder.build_problem(jobs=job_list, workers=worker_list, depot_address=depot_adr, start_weekday=start_weekday, allow_diff=allow_diff)
+    return builder.build_problem(
+        jobs=job_list,
+        workers=filtered_workers,
+        depot_address=depot_adr,
+        start_weekday=start_weekday,
+        allow_diff=allow_diff,
+    )
 
 
 def build_vrp_problem(job_list, worker_list, start_weekday, allow_diff):
