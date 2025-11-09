@@ -1,19 +1,44 @@
 from ortools.constraint_solver import pywrapcp
 from ortools.constraint_solver import routing_enums_pb2
 from functools import partial
-from datetime import datetime, timedelta
-from datetime import time as dt_time
-from typing import List
+from typing import List, Optional
 import argparse
 import time_details as T
 import time
 
 from vrp.problem_structures import VRPProblemDefinition
 
-def timedelta_format(td):
-    ts = int(td.total_seconds())
-    tm = dt_time(hour=(ts//3600),second=(ts%3600//60))
-    return tm.strftime("%H:%S")
+def _format_minutes(value: int) -> str:
+    hours, minutes = divmod(int(value), 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _ensure_minutes_matrix(matrix: List[List[Optional[float]]]) -> List[List[int]]:
+    """Convert any duration matrix to integer minutes."""
+
+    if matrix is None:
+        raise ValueError("time_matrix must be provided")
+
+    seconds_like = any(
+        value is not None and float(value) > 60.0
+        for row in matrix
+        for value in row
+    )
+
+    minutes_matrix: List[List[int]] = []
+    for row in matrix:
+        minutes_row: List[int] = []
+        for value in row:
+            if value is None:
+                minutes_row.append(0)
+                continue
+            minutes = float(value) / 60.0 if seconds_like else float(value)
+            if minutes > 0:
+                minutes_row.append(max(1, int(round(minutes))))
+            else:
+                minutes_row.append(0)
+        minutes_matrix.append(minutes_row)
+    return minutes_matrix
 
 
 def solve_vrp_problem_definition(
@@ -34,7 +59,7 @@ def solve_vrp_problem_definition(
     modules can easily feed data without going through the ``time_details``
     helper module.
     """
-    vehicles = len(VRPProblemDefinition.worker_constraints)
+    vehicles = len(problem.worker_constraints)
 
     if days <= 0:
         raise ValueError("days must be a positive integer")
@@ -43,14 +68,14 @@ def solve_vrp_problem_definition(
 
     day_start = start_hour * 60
     day_end = end_hour * 60
-    base_matrix = problem.time_matrix
+    base_matrix = _ensure_minutes_matrix(problem.time_matrix)
     matrix_size = len(base_matrix)
 
-    service_fallback = max(service_fallback_minutes, 0) * 60
+    service_fallback = max(service_fallback_minutes, 0)
     service_times: List[int] = [0] * matrix_size
     for node in problem.nodes:
         if 0 <= node.node_id < matrix_size:
-            duration = int(node.service_duration)
+            duration = int(round(node.service_duration.total_seconds() / 60.0))
             service_times[node.node_id] = duration if duration > 0 else service_fallback
 
     for idx in range(1, matrix_size):
@@ -95,7 +120,7 @@ def solve_vrp_problem_definition(
     def transit_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
-        infinite_time = day_end * 1000
+        infinite_time = (day_end - day_start + service_fallback) * 1000
 
         if all_morning_nodes and from_node in all_night_nodes and to_node not in all_morning_nodes:
             return infinite_time
@@ -138,9 +163,17 @@ def solve_vrp_problem_definition(
         if sv_start is not None:
             sv_start.SetValue(0)
 
-    for node in range(1, num_nodes):
-        index = manager.NodeToIndex(node)
-        time_dimension.CumulVar(index).SetRange(day_start, day_end)
+    for node in problem.nodes:
+        index = manager.NodeToIndex(node.node_id)
+        tw = node.time_window
+        start = day_start
+        end = day_end
+        if tw.start is not None and tw.end is not None:
+            start = max(day_start, int(tw.start))
+            end = min(day_end, int(tw.end))
+        if start > end:
+            start, end = day_start, day_end
+        time_dimension.CumulVar(index).SetRange(start, end)
     for node in all_morning_nodes:
         index = manager.NodeToIndex(node)
         time_dimension.CumulVar(index).SetRange(day_start, day_start)
@@ -169,6 +202,46 @@ def solve_vrp_problem_definition(
             day_dim.CumulVar(manager.NodeToIndex(m)).SetRange(d, d)
         for d, n in enumerate(night_nodes_by_vehicle[v]):
             day_dim.CumulVar(manager.NodeToIndex(n)).SetRange(d, d)
+
+    for node in problem.nodes:
+        if node.time_window.day is not None:
+            day_dim.CumulVar(manager.NodeToIndex(node.node_id)).SetRange(node.time_window.day, node.time_window.day)
+
+    def workload_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        if from_node in all_night_nodes:
+            service_time = 0
+        elif from_node in all_morning_nodes or from_node == 0:
+            service_time = 0
+        else:
+            service_time = service_times[_matrix_index(from_node)]
+        travel_time = base_matrix[_matrix_index(from_node)][_matrix_index(to_node)]
+        return int(service_time + travel_time)
+
+    workload_cb_index = routing.RegisterTransitCallback(workload_callback)
+    max_capacity = day_end
+    for constraints in problem.worker_constraints:
+        for bound in (constraints.max_daily_minutes, constraints.max_weekly_minutes):
+            if bound:
+                max_capacity = max(max_capacity, int(bound))
+    routing.AddDimension(
+        workload_cb_index,
+        slack_max=0,
+        capacity=max_capacity,
+        fix_start_cumul_to_zero=True,
+        name="Workload",
+    )
+    workload_dim = routing.GetDimensionOrDie("Workload")
+
+    for vehicle_id, constraints in enumerate(problem.worker_constraints):
+        upper_bound = None
+        if constraints.max_daily_minutes is not None:
+            upper_bound = constraints.max_daily_minutes
+        elif constraints.max_weekly_minutes is not None:
+            upper_bound = constraints.max_weekly_minutes
+        if upper_bound is not None:
+            workload_dim.CumulVar(routing.End(vehicle_id)).SetRange(0, int(upper_bound))
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = (routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION)
@@ -214,18 +287,18 @@ def solve_vrp_problem_definition(
             elif node in all_morning_nodes:
                 node_str = 'Starting day at {}, dummy for 1'.format(node)
 
-            mintime = timedelta(seconds=solution.Min(cumultime))
-            maxtime = timedelta(seconds=solution.Max(cumultime))
-            line_data = [node_str, solution.Value(count), timedelta_format(mintime), timedelta_format(maxtime)]
+            mintime = solution.Min(cumultime)
+            maxtime = solution.Max(cumultime)
+            line_data = [node_str, solution.Value(count), _format_minutes(mintime), _format_minutes(maxtime)]
             print(line_data)
             vehicle_schedule.append(line_data)
             index = solution.Value(routing.NextVar(index))
 
         cumultime = time_dimension.CumulVar(index)
         count = count_dimension.CumulVar(index)
-        mintime = timedelta(seconds=solution.Min(cumultime))
-        maxtime = timedelta(seconds=solution.Max(cumultime))
-        line_data = [manager.IndexToNode(index), solution.Value(count), timedelta_format(mintime), timedelta_format(maxtime)]
+        mintime = solution.Min(cumultime)
+        maxtime = solution.Max(cumultime)
+        line_data = [manager.IndexToNode(index), solution.Value(count), _format_minutes(mintime), _format_minutes(maxtime)]
         print(line_data)
         vehicle_schedule.append(line_data)
         result['Scheduled'].append(vehicle_schedule)
@@ -497,12 +570,12 @@ def main():
             if node in all_morning_nodes:
               node_str = 'Starting day at {}, dummy for 1'.format(node)
 
-            mintime = timedelta(seconds=solution.Min(cumultime))
-            maxtime = timedelta(seconds=solution.Max(cumultime))
-            
+            mintime = solution.Min(cumultime)
+            maxtime = solution.Max(cumultime)
+
             line_data = [node_str, solution.Value(count),
-                         timedelta_format(mintime),
-                         timedelta_format(maxtime)]
+                         _format_minutes(mintime),
+                         _format_minutes(maxtime)]
             
             print(line_data)
             vehicle_schedule.append(line_data)
@@ -510,13 +583,13 @@ def main():
           # Add the end node for this vehicle
           cumultime = time_dimension.CumulVar(index)
           count = count_dimension.CumulVar(index)
-          mintime = timedelta(seconds=solution.Min(cumultime))
-          maxtime = timedelta(seconds=solution.Max(cumultime))
-          
+          mintime = solution.Min(cumultime)
+          maxtime = solution.Max(cumultime)
+
           line_data = [manager.IndexToNode(index),
                        solution.Value(count),
-                       timedelta_format(mintime),
-                       timedelta_format(maxtime)]
+                       _format_minutes(mintime),
+                       _format_minutes(maxtime)]
           print(line_data)
           vehicle_schedule.append(line_data)    
 
