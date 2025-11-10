@@ -23,6 +23,12 @@ from typing import Iterable, List, Optional, Sequence
 import altair as alt
 import pandas as pd
 import streamlit as st
+import sys, os
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 
 from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
@@ -31,10 +37,10 @@ from setup_problem import format_jobs, format_workers
 from vrp.problem_structures import VRPProblemBuilder, VRPProblemDefinition
 from vrp_multiple_days import solve_vrp_problem_definition
 
+
 # ---------------------------------------------------------------------------
 # Helper data structures
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class ScheduleAssignment:
@@ -164,7 +170,7 @@ def _timeline_chart(df: pd.DataFrame, title: str) -> None:
         )
         .properties(title=title, height=max(240, 40 * df["worker"].nunique()))
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width='stretch')
 
 
 def _load_jobs(file: Optional[bytes], selected_date: date, horizon: int) -> List[Jobclass]:

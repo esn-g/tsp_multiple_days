@@ -226,6 +226,8 @@ def solve_vrp_problem_definition(
         for bound in (constraints.max_daily_minutes, constraints.max_weekly_minutes):
             if bound:
                 max_capacity = max(max_capacity, int(bound))
+            #else:
+                #max_capacity = 
     routing.AddDimension(
         workload_cb_index,
         slack_max=0,
