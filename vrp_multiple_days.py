@@ -258,16 +258,6 @@ def solve_vrp_problem_definition(
     print("Solver started...")
     t1 = time.perf_counter()
     solution = routing.SolveWithParameters(search_parameters)
-
-    if solution is None:
-        print("Primary search failed to find a solution – retrying with fallback strategy...")
-        fallback_parameters = pywrapcp.DefaultRoutingSearchParameters()
-        fallback_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        )
-        fallback_parameters.time_limit.seconds = max(5, timelimit_seconds)
-        fallback_parameters.log_search = debug
-        solution = routing.SolveWithParameters(fallback_parameters)
     t2 = time.perf_counter()
     print(f"[TIMING] Solve time: {t2 - t1:.3f} s")
 
