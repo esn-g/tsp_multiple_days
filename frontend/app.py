@@ -184,35 +184,18 @@ def _assignments_to_df(assignments: Iterable[ScheduleAssignment], base_date: dat
     return pd.DataFrame(rows)
 
 
-def _truncate_text(value: str, limit: int = 40) -> str:
-    value = value.strip()
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 1)] + "…"
-
-
-def _format_event_label_parts(row: pd.Series) -> List[str]:
+def _format_event_label(row: pd.Series) -> str:
     description = str(row.get("description") or "").strip()
+    window = ""
     start = row.get("start")
     end = row.get("end")
-    window = ""
     if isinstance(start, datetime) and isinstance(end, datetime):
-        window = f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
-    worker = str(row.get("worker") or "").strip()
-
-    parts: List[str] = []
-    if description:
-        parts.append(_truncate_text(description))
-    if window:
-        parts.append(window)
-    if worker:
-        parts.append(_truncate_text(worker, limit=32))
-    return parts
-
-
-def _format_event_label(row: pd.Series, *, separator: str = "\n") -> str:
-    parts = _format_event_label_parts(row)
-    return separator.join(parts)
+        window = f" {start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+    worker = str(row.get("worker") or "")
+    text = " · ".join(filter(None, [description, window.strip(), worker]))
+    if len(text) <= 45:
+        return text
+    return text[:42] + "…"
 
 
 @st.cache_data(show_spinner=False)
@@ -232,9 +215,7 @@ def _worker_color(worker: str) -> Tuple[int, int, int]:
     return _COLOR_PALETTE[index]
 
 
-def _prepare_map_artifacts(
-    df: pd.DataFrame, *, depot_address: Optional[str] = None
-) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+def _prepare_map_artifacts(df: pd.DataFrame) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
     points: List[Dict[str, object]] = []
     lines: List[Dict[str, object]] = []
 
@@ -244,37 +225,15 @@ def _prepare_map_artifacts(
     working_df = df.sort_values(["worker", "start"]).copy()
     working_df["date_only"] = working_df["start"].dt.date
 
-    depot_coords: Optional[Tuple[float, float]] = None
-    if depot_address:
-        depot_coords = _geocode_address(depot_address)
-
-    if depot_coords:
-        depot_lon, depot_lat = depot_coords
-        for day in sorted({d for d in working_df["date_only"] if pd.notna(d)}):
-            points.append(
-                {
-                    "lon": depot_lon,
-                    "lat": depot_lat,
-                    "worker": "Depot",
-                    "date": str(day),
-                    "job_id": "Depot",
-                    "address": depot_address,
-                    "label": "Depot",
-                    "color": [45, 45, 45, 220],
-                    "radius": 160,
-                }
-            )
-
     for (worker, day), group in working_df.groupby(["worker", "date_only"], sort=True):
         previous: Optional[Tuple[float, float]] = None
         color = list(_worker_color(worker))
-        route_points: List[Tuple[float, float]] = []
         for record in group.itertuples(index=False):
             coords = _geocode_address(getattr(record, "address", ""))
             if not coords:
                 continue
             lon, lat = coords
-            label = _format_event_label(pd.Series(record._asdict()), separator="<br/>")
+            label = _format_event_label(pd.Series(record._asdict()))
             point = {
                 "lon": lon,
                 "lat": lat,
@@ -284,10 +243,8 @@ def _prepare_map_artifacts(
                 "address": getattr(record, "address", ""),
                 "label": label,
                 "color": color + [200],
-                "radius": 120,
             }
             points.append(point)
-            route_points.append((lon, lat))
             if previous:
                 lines.append(
                     {
@@ -302,41 +259,11 @@ def _prepare_map_artifacts(
                 )
             previous = (lon, lat)
 
-        if depot_coords and route_points:
-            depot_lon, depot_lat = depot_coords
-            first_lon, first_lat = route_points[0]
-            last_lon, last_lat = route_points[-1]
-            depot_line_color = color + [180]
-            lines.append(
-                {
-                    "source_lon": depot_lon,
-                    "source_lat": depot_lat,
-                    "target_lon": first_lon,
-                    "target_lat": first_lat,
-                    "color": depot_line_color,
-                    "worker": worker,
-                    "date": str(day),
-                }
-            )
-            lines.append(
-                {
-                    "source_lon": last_lon,
-                    "source_lat": last_lat,
-                    "target_lon": depot_lon,
-                    "target_lat": depot_lat,
-                    "color": depot_line_color,
-                    "worker": worker,
-                    "date": str(day),
-                }
-            )
-
     return points, lines
 
 
-def _map_chart(
-    df: pd.DataFrame, title: str, *, key_prefix: str, depot_address: Optional[str] = None
-) -> None:
-    points, lines = _prepare_map_artifacts(df, depot_address=depot_address)
+def _map_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
+    points, lines = _prepare_map_artifacts(df)
     if not points:
         st.info(f"No geocoded locations available for '{title}'.")
         return
@@ -349,7 +276,7 @@ def _map_chart(
         data=points,
         get_position="[lon, lat]",
         get_fill_color="color",
-        get_radius="radius",
+        get_radius=120,
         pickable=True,
     )
 
@@ -376,9 +303,7 @@ def _map_chart(
     st.pydeck_chart(deck, use_container_width=True, key=f"map_{key_prefix}")
 
 
-def _schedule_day_view(
-    df: pd.DataFrame, title: str, *, key_prefix: str, depot_address: Optional[str] = None
-) -> None:
+def _schedule_day_view(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
     if df.empty:
         st.info(f"No schedulable entries available for '{title}'.")
         return
@@ -415,12 +340,7 @@ def _schedule_day_view(
 
     subtitle = f"{title} – {pd.Timestamp(selected_day).strftime('%Y-%m-%d')}"
     _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
-    _map_chart(
-        filtered,
-        subtitle,
-        key_prefix=f"{key_prefix}_{selected_day}",
-        depot_address=depot_address,
-    )
+    _map_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
 
 
 def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
@@ -428,29 +348,20 @@ def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
         st.info(f"No schedulable entries available for '{title}'.")
         return
 
-    df = df.copy().reset_index(drop=True)
-    df["row_id"] = df.index.astype(str)
-    df["event_label_parts"] = df.apply(_format_event_label_parts, axis=1)
+    df = df.copy()
+    df["event_label"] = df.apply(_format_event_label, axis=1)
+    df["midpoint"] = df["start"] + (df["end"] - df["start"]) / 2
 
-    text_df = df.explode("event_label_parts").dropna(subset=["event_label_parts"]).copy()
-    text_df = text_df.rename(columns={"event_label_parts": "label_text"})
-    text_df["line_offset"] = text_df.groupby("row_id").cumcount()
-    text_df["offset_pixels"] = text_df["line_offset"] * 14
-
-    worker_values = [value for value in df["worker"].dropna().unique()]
-    worker_order = sorted(worker_values) if worker_values else list(df["worker"].unique())
-    worker_count = max(1, len(worker_order))
+    worker_count = max(1, df["worker"].nunique())
     chart_width = max(400, 180 * worker_count)
 
-    y_scale = alt.Scale(reverse=True)
-
     bars = (
-        alt.Chart(df.drop(columns=["event_label_parts"], errors="ignore"))
+        alt.Chart(df)
         .mark_rect()
         .encode(
-            x=alt.X("worker:N", title="Worker", sort=worker_order),
-            y=alt.Y("start:T", title="Time", scale=y_scale),
-            y2=alt.Y2("end:T"),
+            x=alt.X("worker:N", title="Worker", sort=list(df["worker"].unique())),
+            y=alt.Y("start:T", title="Start time"),
+            y2=alt.Y2("end:T", title="End time"),
             color=alt.Color("job_id:N", title="Job", legend=None),
             tooltip=[
                 "job_id",
@@ -464,26 +375,20 @@ def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
         )
     )
 
-    text_layer: Optional[alt.Chart] = None
-    if not text_df.empty:
-        text_layer = (
-            alt.Chart(text_df)
-            .mark_text(align="left", baseline="top", dx=4, dy=4, color="black")
-            .encode(
-                x=alt.X("worker:N", sort=worker_order),
-                y=alt.Y("start:T", scale=y_scale),
-                yOffset=alt.YOffset("offset_pixels:Q"),
-                text=alt.Text("label_text:N"),
-                detail="row_id:N",
-            )
+    text = (
+        alt.Chart(df)
+        .mark_text(align="left", baseline="middle", dx=4, dy=0, color="black")
+        .encode(
+            x=alt.X("worker:N", sort=list(df["worker"].unique())),
+            y=alt.Y("midpoint:T"),
+            text=alt.Text("event_label:N"),
         )
+    )
 
-    layers = [bars]
-    if text_layer is not None:
-        layers.append(text_layer)
-
-    chart = alt.layer(*layers).properties(title=title, width=chart_width, height=520).configure_axis(
-        labelAngle=0
+    chart = (
+        alt.layer(bars, text)
+        .properties(title=title, width=chart_width, height=520)
+        .configure_axis(labelAngle=0)
     )
 
     st.altair_chart(chart, use_container_width=True, key=f"timeline_{key_prefix}")
@@ -780,12 +685,7 @@ def main() -> None:
     if jobs:
         original_df = _jobs_dataframe(jobs)
         st.dataframe(original_df)
-        _schedule_day_view(
-            original_df,
-            "Original schedule",
-            key_prefix="original",
-            depot_address=depot_address,
-        )
+        _schedule_day_view(original_df, "Original schedule", key_prefix="original")
     else:
         st.info("No jobs loaded yet. Add jobs in the scenario builder or provide an Excel file.")
 
@@ -817,12 +717,7 @@ def main() -> None:
                 st.success(f"Optimisation complete. Objective value: {solution.get('objective')}")
                 result_df = _assignments_to_df(assignments, todays_date)
                 st.dataframe(result_df)
-                _schedule_day_view(
-                    result_df,
-                    "Optimised schedule",
-                    key_prefix="optimised",
-                    depot_address=depot_address,
-                )
+                _schedule_day_view(result_df, "Optimised schedule", key_prefix="optimised")
 
 
 if __name__ == "__main__":
