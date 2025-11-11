@@ -1,7 +1,43 @@
 {
+  "bang\u00e5rds gatan 8, ulricehamn, 523 44": [
+    13.409923,
+    57.797105
+  ],
+  "bang\u00e5rdsgatan 6 & 8, ulricehamn": [
+    13.412116,
+    57.797781
+  ],
+  "bang\u00e5rdsgatan 6, v\u00e5ning 4, ulricehamn, 523 44": [
+    13.412116,
+    57.797781
+  ],
+  "bang\u00e5rdsgatan 8, ulricehamn, 523 44": [
+    13.412236,
+    57.798017
+  ],
+  "borgm\u00e4stargatan 21, ulricehamn, 523 39": [
+    13.423086,
+    57.800731
+  ],
   "bor\u00e5sv\u00e4gen 25, ulricehamn, 523 37": [
     13.40851,
     57.80379
+  ],
+  "bor\u00e5sv\u00e4gen 38, ulricehamn": [
+    13.412865,
+    57.801028
+  ],
+  "bor\u00e5sv\u00e4gen 50, ulricehamn": [
+    13.407287,
+    57.805001
+  ],
+  "brf nya ekhult, malmgrensgatan 6a-h, ulricehamn, 523 31": [
+    13.411932,
+    57.782006
+  ],
+  "centralv\u00e4gen 26, dalum, 523 75": [
+    13.468236,
+    57.899568
   ],
   "centralv\u00e4gen 34, tr\u00e4det, 523 78": [
     13.539147,
@@ -15,9 +51,33 @@
     13.416505,
     57.800103
   ],
+  "dalstigen 6, fot\u00e5sen , ulricehamn, 523 37": [
+    15.612031,
+    56.25882
+  ],
+  "ekered 378, ulricehamn, 523 90": [
+    13.45382,
+    57.806535
+  ],
+  "ekmansgatan 17, ulricehamn, 52331": [
+    13.4099,
+    57.779781
+  ],
   "falk\u00f6pingsv\u00e4gen 10, ulricehamn": [
     13.42187,
     57.806679
+  ],
+  "falk\u00f6pingsv\u00e4gen 10, ulricehamn, 523 37": [
+    13.42187,
+    57.806679
+  ],
+  "fornminnesv\u00e4gen 8, h\u00f6kerum, 523 74": [
+    13.275237,
+    57.845995
+  ],
+  "furustigen 25, ulricehamn, 52332": [
+    13.423373,
+    57.782819
   ],
   "f\u00e4nneslunda 110, h\u00f6kerum, 523 99": [
     13.15717,
@@ -35,6 +95,10 @@
     13.427233,
     57.859146
   ],
+  "g\u00f6t\u00e5kra 133, vegby, 523 62": [
+    13.376142,
+    57.679422
+  ],
   "hillaredsv\u00e4gen 10, ulricehamn, 523 21": [
     13.442491,
     57.80176
@@ -42,6 +106,10 @@
   "hillaredsv\u00e4gen 12, ulricehamn, 523 38": [
     13.442746,
     57.800638
+  ],
+  "idrottsgatan 8, ulricehamn": [
+    13.437432,
+    57.784905
   ],
   "industrigatan 5, tranemo": [
     13.338114,
@@ -71,6 +139,10 @@
     13.393266,
     57.676304
   ],
+  "lind\u00e4ngsv\u00e4gen 10, ulricehamn": [
+    13.418361,
+    57.797287
+  ],
   "lind\u00e4ngsv\u00e4gen 7 , v\u00e5n 3, ulricehamn, 523 36": [
     13.416115,
     57.795792
@@ -83,13 +155,33 @@
     13.536472,
     57.596893
   ],
+  "l\u00f6nneb\u00e4ck 104, h\u00f6ssna, ulricehamn, 523 97": [
+    13.528616,
+    57.821899
+  ],
+  "maskinv\u00e4gen 1, ulricehamn, 523 38": [
+    13.443831,
+    57.803783
+  ],
+  "maskinv\u00e4gen 6b, ulrcehamn, 523 38": [
+    13.446977,
+    57.802394
+  ],
   "nillasv\u00e4g 1a, ulricehamn, 523 39": [
     13.423264,
     57.798805
   ],
+  "nolhagav\u00e4gen 12, marb\u00e4ck": [
+    13.430995,
+    57.741125
+  ],
   "norra kullagatan 4, v\u00e5n 2, lgh 1102, ulricehamn, 523 44": [
     13.413617,
     57.794907
+  ],
+  "norra stranden 1a, ulricehamn, 523 00": [
+    9.23916,
+    58.719057
   ],
   "nyboholmsv\u00e4gen 8": [
     15.514181,
@@ -99,17 +191,45 @@
     13.414597,
     57.789763
   ],
+  "parkgatan 14, ulricehamn, 523 32": [
+    13.414039,
+    57.780176
+  ],
   "riksv\u00e4g 46, timmele": [
     16.735298,
     58.742192
+  ],
+  "r\u00f6nn\u00e5sgatan , (granne med lager157), ulricehamn, 523 38": [
+    13.432051,
+    57.797645
   ],
   "r\u00f6nn\u00e5sgatan 3a, ulricehamn, 523 38": [
     13.457927,
     57.805733
   ],
+  "r\u00f6nn\u00e5sgatan 5a, ulricehamn": [
+    13.463623,
+    57.804262
+  ],
   "r\u00f6nn\u00e5sliden 4, ulricehamn, 523 38": [
     13.462739,
     57.801155
+  ],
+  "skogsv\u00e4gen 23, dalstorp ., 514 60": [
+    13.507037,
+    57.606133
+  ],
+  "sk\u00f6rdev\u00e4gen 7, timmele, 523 72": [
+    13.425336,
+    57.862367
+  ],
+  "storgatan 11-13, ulricehamn": [
+    13.410247,
+    57.789013
+  ],
+  "storgatan 12 e, ulricehamn, 523 31": [
+    13.413473,
+    57.792887
   ],
   "storgatan 55, ulricehamn, 523 30": [
     13.409293,
@@ -127,6 +247,10 @@
     13.40791,
     57.786057
   ],
+  "storgatan 8, ulricehamn": [
+    13.413991,
+    57.793578
+  ],
   "storgatan 8, ulricehamn, 523 30": [
     13.413991,
     57.793578
@@ -134,6 +258,10 @@
   "strandgatan 30, ulricehamn, 52330": [
     13.409727,
     57.789696
+  ],
+  "strandgatan 41": [
+    21.378087,
+    62.275088
   ],
   "strandgatan 42, ulricehamn, 523 31": [
     13.407778,
@@ -147,6 +275,10 @@
     13.413323,
     57.794319
   ],
+  "svarvaregatan 20": [
+    25.043374,
+    60.198182
+  ],
   "verkstadsv\u00e4gen 1, dalstorp, 514 63": [
     13.526277,
     57.5993
@@ -154,6 +286,10 @@
   "verkstadsv\u00e4gen 4, dalstorp, 51463": [
     13.526416,
     57.600581
+  ],
+  "viskabrov\u00e4gen 4, h\u00f6kerum, 523 74": [
+    13.285641,
+    57.838794
   ],
   "vistaforsv\u00e4gen 4, ulricehamn": [
     13.410631,

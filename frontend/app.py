@@ -67,6 +67,8 @@ _EMPLOYMENT_TERMS = [
 ]
 
 
+
+
 # ---------------------------------------------------------------------------
 # Helper data structures
 # ---------------------------------------------------------------------------
@@ -349,7 +351,7 @@ def _map_chart(
         },
     )
 
-    st.pydeck_chart(deck, use_container_width=True, key=f"map_{key_prefix}")
+    st.pydeck_chart(deck, width='stretch', key=f"map_{key_prefix}")
 
 
 def _schedule_day_view(
@@ -436,10 +438,22 @@ def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
 
     text = (
         alt.Chart(df)
-        .mark_text(align="left", baseline="top", dx=4, dy=4, color="black")
+        .mark_text(
+            align="left",
+            baseline="top",
+            dx=4,          # small left padding inside the rect
+            dy=2,          # small top padding inside the rect
+            fontSize=9,
+            lineBreak="\n",     # ← this makes "\n" create a new line
+            lineHeight=11,      # ← tweak spacing between lines
+            color="black",
+        )
         .encode(
-            x=alt.X("worker:N", sort=list(df["worker"].unique())),
+            # <— key change: pin to the LEFT edge of the worker band
+            x=alt.X("worker:N", sort=list(df["worker"].unique()), bandPosition=0),
+            # y is the start of the block; with reverse scale this is the visual “top”
             y=alt.Y("start:T", scale=alt.Scale(reverse=True)),
+            # your label already contains '\n' so this renders multi-line
             text=alt.Text("event_label:N"),
         )
     )
@@ -450,7 +464,7 @@ def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
         .configure_axis(labelAngle=0)
     )
 
-    st.altair_chart(chart, use_container_width=True, key=f"timeline_{key_prefix}")
+    st.altair_chart(chart, width='stretch', key=f"timeline_{key_prefix}")
 
 
 def _load_jobs(file: Optional[bytes], selected_date: date, horizon: int) -> List[Jobclass]:
@@ -553,15 +567,15 @@ def _configure_vt_workers(workers: Sequence[Workerclass], *, key_prefix: str = "
             worker.days_per_week = st.number_input(
                 f"{worker.name} · Dagar per vecka",
                 min_value=0.0,
-                value=float(days_default or 0),
-                step=0.5,
+                value=float(days_default or 5.0),
+                step=1.0,
                 key=f"{key_prefix}_days_{idx}_{worker.name}",
             )
             worker.hours_per_week = st.number_input(
                 f"{worker.name} · Timmar per vecka",
                 min_value=0.0,
-                value=float(hours_default or 0),
-                step=1.0,
+                value=float(hours_default or 40.0),
+                step=5.0,
                 key=f"{key_prefix}_hours_{idx}_{worker.name}",
             )
 
@@ -703,19 +717,18 @@ def _scenario_builder_forms() -> tuple[List[Jobclass], List[Workerclass]]:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Multi-day schedule optimiser", layout="wide")
+    st.set_page_config(page_title="Show and Optimize Schedule", layout="wide")
     st.title("Multi-day schedule optimiser")
 
-    mode = st.sidebar.radio("Mode", options=["Schedule review", "Scenario builder"], index=0)
+    mode = st.sidebar.radio("Mode", options=["Schedule review", "Optimal insertion"], index=0)
 
-    todays_date = st.sidebar.date_input("Today's date", value=date.today())
+    todays_date = st.sidebar.date_input("Today's date", value=date(2025,9,1))
     horizon = st.sidebar.number_input("Horizon (days)", min_value=0, value=0, step=1)
-    allow_diff = st.sidebar.checkbox("Allow flexible day windows", value=True)
+    allow_diff = st.sidebar.checkbox("Allow flexible day windows", value=False)
     scheduling_days = st.sidebar.number_input("Optimisation days", min_value=1, value=max(1, horizon + 1))
     start_hour = st.sidebar.slider("Day start (hour)", min_value=0, max_value=23, value=6)
     end_hour = st.sidebar.slider("Day end (hour)", min_value=1, max_value=23, value=18)
-    service_fallback = st.sidebar.number_input("Fallback service (minutes)", min_value=1, value=120)
-    time_limit = st.sidebar.number_input("Solver time limit (s)", min_value=1, value=30)
+    time_limit = st.sidebar.number_input("Solver time limit (s)", min_value=1, value=10)
 
     depot_address = st.sidebar.text_input("Depot address", value="Storgatan 69 ,523 31 ULRICEHAMN, Sweden")
 
@@ -724,18 +737,14 @@ def main() -> None:
 
     jobs_file = None
     staff_file = None
-    if mode == "Schedule review":
-        jobs_file = st.sidebar.file_uploader("Jobs Excel (.xlsx)", type=["xlsx"])
-        staff_file = st.sidebar.file_uploader("Staff Excel (.xlsx)", type=["xlsx"])
 
-    if mode == "Schedule review":
-        jobs = _load_jobs(jobs_file, todays_date, horizon)
-        workers = _load_workers(staff_file)
-    else:
-        jobs = []
-        workers = []
+    jobs_file = st.sidebar.file_uploader("Jobs Excel (.xlsx)", type=["xlsx"])
+    staff_file = st.sidebar.file_uploader("Staff Excel (.xlsx)", type=["xlsx"])
 
-    manual_jobs, manual_workers = _scenario_builder_forms() if mode == "Scenario builder" else ([], [])
+    jobs = _load_jobs(jobs_file, todays_date, horizon)
+    workers = _load_workers(staff_file)
+
+    manual_jobs, manual_workers = _scenario_builder_forms() if mode == "Optimal insertion" else ([], [])
 
     jobs = list(jobs) + list(manual_jobs)
     workers = list(workers) + list(manual_workers)
@@ -769,7 +778,6 @@ def main() -> None:
                 days=scheduling_days,
                 start_hour=start_hour,
                 end_hour=end_hour,
-                service_fallback_minutes=service_fallback,
                 timelimit_seconds=time_limit,
                 debug=False,
             )
