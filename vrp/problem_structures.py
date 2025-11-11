@@ -221,15 +221,18 @@ class VRPProblemBuilder:
     def build_nodes(self, start_day, allow_diff, jobs: Iterable[Jobclass]) -> List[VRPNode]:
         nodes: List[VRPNode] = []
         for idx, job in enumerate(jobs, start=1):  # node_id starts at 1 because 0 is usually the depot
+            service_duration = _hours_to_timedelta(job.service_time)
+            service_minutes = int(round(service_duration.total_seconds() / 60.0))
+            if service_minutes <= 0:
+                service_minutes = 120
             time_window = TimeWindow.from_job(
                 job,
                 default_day_start=self._default_day_start,
                 default_day_end=self._default_day_end,
-                start_day = start_day,
-                allow_diff= allow_diff
-                
+                start_day=start_day,
+                allow_diff=allow_diff,
+                duration_min=service_minutes,
             )
-            service_duration = _hours_to_timedelta(job.service_time)
             address = job.get_job_adress() if hasattr(job, "get_job_adress") else job.adress
             nodes.append(
                 VRPNode(
