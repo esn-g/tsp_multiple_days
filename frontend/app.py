@@ -18,9 +18,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import altair as alt
+import pydeck as pdk
 import pandas as pd
 import streamlit as st
 import sys, os
@@ -33,9 +34,37 @@ if project_root not in sys.path:
 from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
 from pyhelpers.day_indexing import weekday_name_sv
+from pyhelpers.geocode import MAPBOX_TOKEN as _GEOCODE_TOKEN, forward_geocode
 from setup_problem import format_jobs, format_workers
 from vrp.problem_structures import VRPProblemBuilder, VRPProblemDefinition
 from vrp_multiple_days import solve_vrp_problem_definition
+
+
+_MAPBOX_TOKEN = os.environ.get("MAPBOX_API_KEY") or os.environ.get("MAPBOX_TOKEN") or _GEOCODE_TOKEN
+if _MAPBOX_TOKEN:
+    pdk.settings.mapbox_api_key = _MAPBOX_TOKEN
+
+_COLOR_PALETTE: List[Tuple[int, int, int]] = [
+    (31, 119, 180),
+    (255, 127, 14),
+    (44, 160, 44),
+    (214, 39, 40),
+    (148, 103, 189),
+    (140, 86, 75),
+    (227, 119, 194),
+    (127, 127, 127),
+    (188, 189, 34),
+    (23, 190, 207),
+]
+
+_EMPLOYMENT_TERMS = [
+    "(VT) – Allmän visstidsanställning",
+    "Full-time",
+    "Part-time",
+    "Hourly",
+    "Seasonal",
+    "Other",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +158,7 @@ def _jobs_dataframe(jobs: Sequence[Jobclass]) -> pd.DataFrame:
                 "end": end_dt,
                 "address": getattr(job, "adress", ""),
                 "service": getattr(job, "service_type", ""),
+                "description": getattr(job, "description", ""),
             }
         )
     return pd.DataFrame(rows)
@@ -148,29 +178,315 @@ def _assignments_to_df(assignments: Iterable[ScheduleAssignment], base_date: dat
                 "end": end_dt,
                 "address": getattr(item.job, "adress", ""),
                 "service": getattr(item.job, "service_type", ""),
+                "description": getattr(item.job, "description", ""),
             }
         )
     return pd.DataFrame(rows)
 
 
-def _timeline_chart(df: pd.DataFrame, title: str) -> None:
+def _truncate_text(value: str, limit: int = 40) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)] + "…"
+
+
+def _format_event_label_parts(row: pd.Series) -> List[str]:
+    description = str(row.get("description") or "").strip()
+    start = row.get("start")
+    end = row.get("end")
+    window = ""
+    if isinstance(start, datetime) and isinstance(end, datetime):
+        window = f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+    worker = str(row.get("worker") or "").strip()
+
+    parts: List[str] = []
+    if description:
+        parts.append(_truncate_text(description))
+    if window:
+        parts.append(window)
+    if worker:
+        parts.append(_truncate_text(worker, limit=32))
+    return parts
+
+
+def _format_event_label(row: pd.Series, *, separator: str = "\n") -> str:
+    parts = _format_event_label_parts(row)
+    return separator.join(parts)
+
+
+@st.cache_data(show_spinner=False)
+def _geocode_address(address: str) -> Optional[Tuple[float, float]]:
+    if not address or not str(address).strip():
+        return None
+    try:
+        return forward_geocode(address)
+    except Exception:
+        return None
+
+
+def _worker_color(worker: str) -> Tuple[int, int, int]:
+    if not worker:
+        return (120, 120, 120)
+    index = abs(hash(worker)) % len(_COLOR_PALETTE)
+    return _COLOR_PALETTE[index]
+
+
+def _prepare_map_artifacts(
+    df: pd.DataFrame, *, depot_address: Optional[str] = None
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    points: List[Dict[str, object]] = []
+    lines: List[Dict[str, object]] = []
+
+    if df.empty:
+        return points, lines
+
+    working_df = df.sort_values(["worker", "start"]).copy()
+    working_df["date_only"] = working_df["start"].dt.date
+
+    depot_coords: Optional[Tuple[float, float]] = None
+    if depot_address:
+        depot_coords = _geocode_address(depot_address)
+
+    if depot_coords:
+        depot_lon, depot_lat = depot_coords
+        for day in sorted({d for d in working_df["date_only"] if pd.notna(d)}):
+            points.append(
+                {
+                    "lon": depot_lon,
+                    "lat": depot_lat,
+                    "worker": "Depot",
+                    "date": str(day),
+                    "job_id": "Depot",
+                    "address": depot_address,
+                    "label": "Depot",
+                    "color": [45, 45, 45, 220],
+                    "radius": 160,
+                }
+            )
+
+    for (worker, day), group in working_df.groupby(["worker", "date_only"], sort=True):
+        previous: Optional[Tuple[float, float]] = None
+        color = list(_worker_color(worker))
+        route_points: List[Tuple[float, float]] = []
+        for record in group.itertuples(index=False):
+            coords = _geocode_address(getattr(record, "address", ""))
+            if not coords:
+                continue
+            lon, lat = coords
+            label = _format_event_label(pd.Series(record._asdict()), separator="<br/>")
+            point = {
+                "lon": lon,
+                "lat": lat,
+                "worker": worker,
+                "date": str(day),
+                "job_id": getattr(record, "job_id", ""),
+                "address": getattr(record, "address", ""),
+                "label": label,
+                "color": color + [200],
+                "radius": 120,
+            }
+            points.append(point)
+            route_points.append((lon, lat))
+            if previous:
+                lines.append(
+                    {
+                        "source_lon": previous[0],
+                        "source_lat": previous[1],
+                        "target_lon": lon,
+                        "target_lat": lat,
+                        "color": color + [160],
+                        "worker": worker,
+                        "date": str(day),
+                    }
+                )
+            previous = (lon, lat)
+
+        if depot_coords and route_points:
+            depot_lon, depot_lat = depot_coords
+            first_lon, first_lat = route_points[0]
+            last_lon, last_lat = route_points[-1]
+            depot_line_color = color + [180]
+            lines.append(
+                {
+                    "source_lon": depot_lon,
+                    "source_lat": depot_lat,
+                    "target_lon": first_lon,
+                    "target_lat": first_lat,
+                    "color": depot_line_color,
+                    "worker": worker,
+                    "date": str(day),
+                }
+            )
+            lines.append(
+                {
+                    "source_lon": last_lon,
+                    "source_lat": last_lat,
+                    "target_lon": depot_lon,
+                    "target_lat": depot_lat,
+                    "color": depot_line_color,
+                    "worker": worker,
+                    "date": str(day),
+                }
+            )
+
+    return points, lines
+
+
+def _map_chart(
+    df: pd.DataFrame, title: str, *, key_prefix: str, depot_address: Optional[str] = None
+) -> None:
+    points, lines = _prepare_map_artifacts(df, depot_address=depot_address)
+    if not points:
+        st.info(f"No geocoded locations available for '{title}'.")
+        return
+
+    avg_lon = sum(point["lon"] for point in points) / len(points)
+    avg_lat = sum(point["lat"] for point in points) / len(points)
+
+    scatter_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=points,
+        get_position="[lon, lat]",
+        get_fill_color="color",
+        get_radius="radius",
+        pickable=True,
+    )
+
+    line_layer = pdk.Layer(
+        "LineLayer",
+        data=lines,
+        get_source_position="[source_lon, source_lat]",
+        get_target_position="[target_lon, target_lat]",
+        get_color="color",
+        get_width=4,
+        pickable=False,
+    )
+
+    deck = pdk.Deck(
+        map_style="mapbox://styles/mapbox/streets-v11",
+        initial_view_state=pdk.ViewState(latitude=avg_lat, longitude=avg_lon, zoom=10, pitch=0, bearing=0),
+        layers=[line_layer, scatter_layer],
+        tooltip={
+            "html": "<b>{worker}</b><br/>{label}<br/><small>{address}</small>",
+            "style": {"fontSize": "12px"},
+        },
+    )
+
+    st.pydeck_chart(deck, use_container_width=True, key=f"map_{key_prefix}")
+
+
+def _schedule_day_view(
+    df: pd.DataFrame, title: str, *, key_prefix: str, depot_address: Optional[str] = None
+) -> None:
     if df.empty:
         st.info(f"No schedulable entries available for '{title}'.")
         return
 
-    chart = (
-        alt.Chart(df)
-        .mark_bar()
-        .encode(
-            x=alt.X("start:T", title="Start time"),
-            x2=alt.X2("end:T", title="End time"),
-            y=alt.Y("worker:N", sort="-x", title="Worker"),
-            color=alt.Color("job_id:N", title="Job"),
-            tooltip=["job_id", "worker", alt.Tooltip("start:T", title="Start"), alt.Tooltip("end:T", title="End"), "service", "address"],
-        )
-        .properties(title=title, height=max(240, 40 * df["worker"].nunique()))
+    working_df = df.copy()
+    working_df["date_only"] = working_df["start"].dt.date
+    unique_days = sorted(day for day in working_df["date_only"].unique() if pd.notna(day))
+
+    if not unique_days:
+        st.info(f"No dated entries available for '{title}'.")
+        return
+
+    selected_day = st.selectbox(
+        "Select day",
+        options=unique_days,
+        format_func=lambda d: pd.Timestamp(d).strftime("%Y-%m-%d"),
+        key=f"{key_prefix}_day",
     )
-    st.altair_chart(chart, width='stretch')
+
+    day_df = working_df[working_df["date_only"] == selected_day]
+    worker_options = sorted(day_df["worker"].dropna().unique())
+
+    selected_workers = st.multiselect(
+        "Select workers to display",
+        options=worker_options,
+        default=worker_options,
+        key=f"{key_prefix}_workers",
+    )
+
+    if selected_workers:
+        filtered = day_df[day_df["worker"].isin(selected_workers)].copy()
+    else:
+        filtered = day_df.iloc[0:0].copy()
+
+    subtitle = f"{title} – {pd.Timestamp(selected_day).strftime('%Y-%m-%d')}"
+    _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
+    _map_chart(
+        filtered,
+        subtitle,
+        key_prefix=f"{key_prefix}_{selected_day}",
+        depot_address=depot_address,
+    )
+
+
+def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
+    if df.empty:
+        st.info(f"No schedulable entries available for '{title}'.")
+        return
+
+    df = df.copy().reset_index(drop=True)
+    df["row_id"] = df.index.astype(str)
+    df["event_label_parts"] = df.apply(_format_event_label_parts, axis=1)
+
+    text_df = df.explode("event_label_parts").dropna(subset=["event_label_parts"]).copy()
+    text_df = text_df.rename(columns={"event_label_parts": "label_text"})
+    text_df["line_offset"] = text_df.groupby("row_id").cumcount()
+    text_df["offset_pixels"] = text_df["line_offset"] * 14
+
+    worker_values = [value for value in df["worker"].dropna().unique()]
+    worker_order = sorted(worker_values) if worker_values else list(df["worker"].unique())
+    worker_count = max(1, len(worker_order))
+    chart_width = max(400, 180 * worker_count)
+
+    y_scale = alt.Scale(reverse=True)
+
+    bars = (
+        alt.Chart(df.drop(columns=["event_label_parts"], errors="ignore"))
+        .mark_rect()
+        .encode(
+            x=alt.X("worker:N", title="Worker", sort=worker_order),
+            y=alt.Y("start:T", title="Time", scale=y_scale),
+            y2=alt.Y2("end:T"),
+            color=alt.Color("job_id:N", title="Job", legend=None),
+            tooltip=[
+                "job_id",
+                "worker",
+                alt.Tooltip("start:T", title="Start"),
+                alt.Tooltip("end:T", title="End"),
+                alt.Tooltip("description:N", title="Description"),
+                "service",
+                "address",
+            ],
+        )
+    )
+
+    text_layer: Optional[alt.Chart] = None
+    if not text_df.empty:
+        text_layer = (
+            alt.Chart(text_df)
+            .mark_text(align="left", baseline="top", dx=4, dy=4, color="black")
+            .encode(
+                x=alt.X("worker:N", sort=worker_order),
+                y=alt.Y("start:T", scale=y_scale),
+                yOffset=alt.YOffset("offset_pixels:Q"),
+                text=alt.Text("label_text:N"),
+                detail="row_id:N",
+            )
+        )
+
+    layers = [bars]
+    if text_layer is not None:
+        layers.append(text_layer)
+
+    chart = alt.layer(*layers).properties(title=title, width=chart_width, height=520).configure_axis(
+        labelAngle=0
+    )
+
+    st.altair_chart(chart, use_container_width=True, key=f"timeline_{key_prefix}")
 
 
 def _load_jobs(file: Optional[bytes], selected_date: date, horizon: int) -> List[Jobclass]:
@@ -253,6 +569,39 @@ def _select_workers_ui(workers: Sequence[Workerclass]) -> List[Workerclass]:
     return [label_to_worker[label] for label in selected_labels]
 
 
+def _configure_vt_workers(workers: Sequence[Workerclass], *, key_prefix: str = "vt") -> None:
+    vt_workers = [
+        worker
+        for worker in workers
+        if isinstance(getattr(worker, "employment_terms", None), str)
+        and "Allmän visstidsanställning" in worker.employment_terms
+    ]
+
+    if not vt_workers:
+        return
+
+    with st.expander("Visstidsanställning (VT) weekly limits", expanded=False):
+        st.write("Justera veckovisa parametrar för arbetare med (VT) – Allmän visstidsanställning.")
+        for idx, worker in enumerate(vt_workers):
+            days_default = worker.days_per_week if pd.notna(getattr(worker, "days_per_week", None)) else 3
+            hours_default = worker.hours_per_week if pd.notna(getattr(worker, "hours_per_week", None)) else 20
+
+            worker.days_per_week = st.number_input(
+                f"{worker.name} · Dagar per vecka",
+                min_value=0.0,
+                value=float(days_default or 0),
+                step=0.5,
+                key=f"{key_prefix}_days_{idx}_{worker.name}",
+            )
+            worker.hours_per_week = st.number_input(
+                f"{worker.name} · Timmar per vecka",
+                min_value=0.0,
+                value=float(hours_default or 0),
+                step=1.0,
+                key=f"{key_prefix}_hours_{idx}_{worker.name}",
+            )
+
+
 def _scenario_builder_forms() -> tuple[List[Jobclass], List[Workerclass]]:
     jobs: List[Jobclass] = st.session_state.setdefault("manual_jobs", [])
     workers: List[Workerclass] = st.session_state.setdefault("manual_workers", [])
@@ -262,10 +611,53 @@ def _scenario_builder_forms() -> tuple[List[Jobclass], List[Workerclass]]:
             name = st.text_input("Name")
             has_license = st.checkbox("Has driving licence", value=True)
             employee_number = st.text_input("Employee number")
-            days_per_week = st.number_input("Days per week", min_value=0.0, value=5.0, step=0.5)
-            hours_per_week = st.number_input("Hours per week", min_value=0.0, value=40.0, step=1.0)
             employment_percentage = st.number_input("Employment %", min_value=0.0, value=100.0, step=5.0)
-            employment_terms = st.text_input("Employment terms", value="Full-time")
+            employment_choice = st.selectbox(
+                "Employment terms",
+                options=_EMPLOYMENT_TERMS,
+                index=1,
+                key="manual_worker_employment_choice",
+            )
+            if employment_choice == "Other":
+                employment_terms = st.text_input(
+                    "Describe employment terms",
+                    value="",
+                    key="manual_worker_employment_custom",
+                )
+            else:
+                employment_terms = employment_choice
+
+            days_key = "manual_worker_days"
+            hours_key = "manual_worker_hours"
+            last_term_key = "manual_worker_last_term"
+
+            if days_key not in st.session_state:
+                st.session_state[days_key] = 5.0
+            if hours_key not in st.session_state:
+                st.session_state[hours_key] = 40.0
+
+            vt_selected = employment_terms == "(VT) – Allmän visstidsanställning"
+            last_term = st.session_state.get(last_term_key)
+            if vt_selected and last_term != employment_terms:
+                st.session_state[days_key] = 3.0
+                st.session_state[hours_key] = 20.0
+            elif last_term == "(VT) – Allmän visstidsanställning" and employment_terms != last_term:
+                st.session_state[days_key] = 5.0
+                st.session_state[hours_key] = 40.0
+            st.session_state[last_term_key] = employment_terms
+
+            days_per_week = st.number_input(
+                "Days per week",
+                min_value=0.0,
+                step=0.5,
+                key=days_key,
+            )
+            hours_per_week = st.number_input(
+                "Hours per week",
+                min_value=0.0,
+                step=1.0,
+                key=hours_key,
+            )
             salary_type = st.text_input("Salary type", value="Monthly")
             submitted = st.form_submit_button("Add worker")
             if submitted and name:
@@ -281,6 +673,8 @@ def _scenario_builder_forms() -> tuple[List[Jobclass], List[Workerclass]]:
                 )
                 workers.append(worker)
                 st.success(f"Added worker {name}")
+                for key in (days_key, hours_key, last_term_key, "manual_worker_employment_choice", "manual_worker_employment_custom"):
+                    st.session_state.pop(key, None)
 
     with st.expander("Add a job"):
         with st.form("add_job_form"):
@@ -386,13 +780,19 @@ def main() -> None:
     if jobs:
         original_df = _jobs_dataframe(jobs)
         st.dataframe(original_df)
-        _timeline_chart(original_df, "Original schedule")
+        _schedule_day_view(
+            original_df,
+            "Original schedule",
+            key_prefix="original",
+            depot_address=depot_address,
+        )
     else:
         st.info("No jobs loaded yet. Add jobs in the scenario builder or provide an Excel file.")
 
     st.subheader("Optimisation setup")
     selected_jobs = _select_jobs_ui(jobs)
     selected_workers = _select_workers_ui(workers)
+    _configure_vt_workers(selected_workers)
 
     if st.button("Run optimisation", disabled=not (selected_jobs and selected_workers)):
         start_weekday = weekday_name_sv(todays_date)
@@ -417,7 +817,12 @@ def main() -> None:
                 st.success(f"Optimisation complete. Objective value: {solution.get('objective')}")
                 result_df = _assignments_to_df(assignments, todays_date)
                 st.dataframe(result_df)
-                _timeline_chart(result_df, "Optimised schedule")
+                _schedule_day_view(
+                    result_df,
+                    "Optimised schedule",
+                    key_prefix="optimised",
+                    depot_address=depot_address,
+                )
 
 
 if __name__ == "__main__":
