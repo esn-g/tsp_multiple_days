@@ -396,13 +396,27 @@ def _schedule_day_view(
         filtered = day_df.iloc[0:0].copy()
 
     subtitle = f"{title} – {pd.Timestamp(selected_day).strftime('%Y-%m-%d')}"
-    _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
-    _map_chart(
-        filtered,
-        subtitle,
-        key_prefix=f"{key_prefix}_{selected_day}",
-        depot_address=depot_address,
+
+    show_map = st.checkbox(
+        "Show map",
+        value=True,
+        key=f"{key_prefix}_{selected_day}_show_map",
+        help="Toggle to display the geographic route next to the schedule",
     )
+
+    if show_map:
+        chart_col, map_col = st.columns((3, 2))
+        with chart_col:
+            _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
+        with map_col:
+            _map_chart(
+                filtered,
+                subtitle,
+                key_prefix=f"{key_prefix}_{selected_day}",
+                depot_address=depot_address,
+            )
+    else:
+        _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
 
 
 def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
@@ -752,7 +766,14 @@ def main() -> None:
     st.subheader("Imported schedule")
     if jobs:
         original_df = _jobs_dataframe(jobs)
-        st.dataframe(original_df)
+        show_original_table = st.checkbox(
+            "Show imported Excel rows",
+            value=False,
+            key="show_original_table",
+            help="Toggle to inspect the raw data that was loaded from Excel.",
+        )
+        if show_original_table:
+            st.dataframe(original_df, use_container_width=True)
         _schedule_day_view(
             original_df,
             "Original schedule",
@@ -763,11 +784,27 @@ def main() -> None:
         st.info("No jobs loaded yet. Add jobs in the scenario builder or provide an Excel file.")
 
     st.subheader("Optimisation setup")
-    selected_jobs = _select_jobs_ui(jobs)
-    selected_workers = _select_workers_ui(workers)
-    _configure_vt_workers(selected_workers)
+    setup_cols = st.columns([2, 1])
 
-    if st.button("Run optimisation", disabled=not (selected_jobs and selected_workers)):
+    with setup_cols[1]:
+        st.markdown("#### Selection")
+        selected_jobs = _select_jobs_ui(jobs)
+        selected_workers = _select_workers_ui(workers)
+        _configure_vt_workers(selected_workers)
+
+    with setup_cols[0]:
+        st.markdown("#### Run solver")
+        metrics_cols = st.columns(2)
+        with metrics_cols[0]:
+            st.metric("Jobs selected", len(selected_jobs))
+        with metrics_cols[1]:
+            st.metric("Workers selected", len(selected_workers))
+        run_clicked = st.button(
+            "Run optimisation",
+            disabled=not (selected_jobs and selected_workers),
+        )
+
+    if run_clicked:
         start_weekday = weekday_name_sv(todays_date)
         problem = _build_problem(selected_jobs, selected_workers, depot=depot_address, start_day=start_weekday, allow_diff=allow_diff)
         if not problem:
@@ -788,7 +825,14 @@ def main() -> None:
             else:
                 st.success(f"Optimisation complete. Objective value: {solution.get('objective')}")
                 result_df = _assignments_to_df(assignments, todays_date)
-                st.dataframe(result_df)
+                show_result_table = st.checkbox(
+                    "Show optimised schedule table",
+                    value=False,
+                    key="show_result_table",
+                    help="Toggle to display the detailed table of optimised assignments.",
+                )
+                if show_result_table:
+                    st.dataframe(result_df, use_container_width=True)
                 _schedule_day_view(
                     result_df,
                     "Optimised schedule",
