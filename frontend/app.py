@@ -15,6 +15,7 @@ worker/time axes so the impact of the optimisation can be inspected visually.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -35,6 +36,7 @@ from classes.Jobclass import Jobclass
 from classes.Workerclass import Workerclass
 from pyhelpers.day_indexing import weekday_name_sv
 from pyhelpers.geocode import MAPBOX_TOKEN as _GEOCODE_TOKEN, forward_geocode
+from pyhelpers.osrm import get_osrm_time_matrix
 from setup_problem import format_jobs, format_workers
 from vrp.problem_structures import VRPProblemBuilder, VRPProblemDefinition
 from vrp_multiple_days import solve_vrp_problem_definition
@@ -422,6 +424,125 @@ def _schedule_day_view(
         _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
 
 
+def _calculate_travel_time_summary(
+    df: pd.DataFrame, depot_address: Optional[str]
+) -> Optional[Dict[str, object]]:
+    """Return travel time aggregates for the provided schedule dataframe.
+
+    The dataframe is expected to contain ``worker``, ``start`` and ``address``
+    columns.  All routes are assumed to start and end at ``depot_address`` on
+    the same day.  Travel durations are summed following the chronological
+    order of jobs per worker per day.
+    """
+
+    if df is None or df.empty or not depot_address:
+        return None
+
+    depot_coords = _geocode_address(depot_address)
+    if not depot_coords:
+        return None
+
+    working_df = df.copy()
+    if "start" not in working_df.columns or "worker" not in working_df.columns:
+        return None
+
+    if not pd.api.types.is_datetime64_any_dtype(working_df["start"]):
+        working_df["start"] = pd.to_datetime(working_df["start"], errors="coerce")
+
+    working_df = working_df.dropna(subset=["start", "worker", "address"])
+    if working_df.empty:
+        return None
+
+    working_df["date_only"] = working_df["start"].dt.date
+    matrix_cache: Dict[Tuple[Tuple[float, float], ...], Optional[List[List[float]]]] = {}
+
+    per_worker_rows: List[Dict[str, object]] = []
+    per_day_totals: Dict[date, float] = defaultdict(float)
+    overall_total = 0.0
+
+    grouped = working_df.groupby(["worker", "date_only"], sort=True)
+
+    for (worker, day), group in grouped:
+        if not worker:
+            continue
+
+        sorted_group = group.sort_values("start")
+
+        route_coords: List[Tuple[float, float]] = [depot_coords]
+        for record in sorted_group.itertuples(index=False):
+            coords = _geocode_address(getattr(record, "address", ""))
+            if not coords:
+                continue
+            route_coords.append(coords)
+        route_coords.append(depot_coords)
+
+        if len(route_coords) <= 2:
+            continue
+
+        coords_key = tuple(route_coords)
+        matrix = matrix_cache.get(coords_key)
+        if matrix is None and coords_key not in matrix_cache:
+            try:
+                matrix = get_osrm_time_matrix([[lon, lat] for lon, lat in route_coords])
+            except Exception:
+                matrix = None
+            matrix_cache[coords_key] = matrix
+
+        if not matrix:
+            continue
+
+        travel_minutes = 0.0
+        for idx in range(len(route_coords) - 1):
+            try:
+                leg = matrix[idx][idx + 1]
+            except (IndexError, TypeError):
+                leg = None
+            if leg is None:
+                continue
+            try:
+                travel_minutes += float(leg)
+            except (TypeError, ValueError):
+                continue
+
+        if travel_minutes <= 0:
+            continue
+
+        date_label = pd.Timestamp(day).strftime("%Y-%m-%d")
+        per_worker_rows.append(
+            {
+                "Worker": worker,
+                "Date": date_label,
+                "Travel minutes": round(travel_minutes, 2),
+            }
+        )
+        per_day_totals[day] += travel_minutes
+        overall_total += travel_minutes
+
+    if not per_worker_rows:
+        return None
+
+    per_worker_df = pd.DataFrame(per_worker_rows).sort_values(["Date", "Worker"]).reset_index(drop=True)
+    per_day_df = (
+        pd.DataFrame(
+            [
+                {
+                    "Date": pd.Timestamp(day).strftime("%Y-%m-%d"),
+                    "Total travel minutes": round(total, 2),
+                }
+                for day, total in sorted(per_day_totals.items())
+            ]
+        )
+        if per_day_totals
+        else pd.DataFrame(columns=["Date", "Total travel minutes"])
+    )
+
+    return {
+        "per_worker": per_worker_df,
+        "per_day": per_day_df,
+        "overall_total": round(overall_total, 2),
+    }
+
+
 def _render_optimised_results(
     state: Optional[dict],
     *,
@@ -470,7 +591,7 @@ def _render_optimised_results(
         help="Toggle to display the detailed table of optimised assignments.",
     )
     if show_result_table:
-        st.dataframe(result_df, use_container_width=True)
+        st.dataframe(result_df, width='stretch')
 
     _schedule_day_view(
         result_df,
@@ -834,13 +955,29 @@ def main() -> None:
             help="Toggle to inspect the raw data that was loaded from Excel.",
         )
         if show_original_table:
-            st.dataframe(original_df, use_container_width=True)
+            st.dataframe(original_df, width='stretch')
         _schedule_day_view(
             original_df,
             "Original schedule",
             key_prefix="original",
             depot_address=depot_address,
         )
+
+        travel_summary = _calculate_travel_time_summary(original_df, depot_address)
+        if travel_summary:
+            st.markdown("#### Travel time summary (minutes)")
+            st.dataframe(travel_summary["per_worker"], width='stretch', key="travel_per_worker")
+            if not travel_summary["per_day"].empty:
+                st.dataframe(travel_summary["per_day"], width='stretch', key="travel_per_day")
+            st.metric(
+                "Total travel minutes across all workers and days",
+                f"{travel_summary['overall_total']:.2f}",
+            )
+        else:
+            st.caption(
+                "Travel time summary is unavailable – ensure addresses can be geocoded "
+                "and that OSRM responses are accessible."
+            )
     else:
         st.info("No jobs loaded yet. Add jobs in the scenario builder or provide an Excel file.")
 
