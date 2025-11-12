@@ -67,6 +67,9 @@ _EMPLOYMENT_TERMS = [
 ]
 
 
+_OPTIMISED_STATE_KEY = "optimised_schedule_state"
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +420,64 @@ def _schedule_day_view(
             )
     else:
         _timeline_chart(filtered, subtitle, key_prefix=f"{key_prefix}_{selected_day}")
+
+
+def _render_optimised_results(
+    state: Optional[dict],
+    *,
+    depot_address: Optional[str],
+    todays_date: date,
+) -> None:
+    if not state:
+        return
+
+    result_df = state.get("result_df")
+    if result_df is None or result_df.empty:
+        return
+
+    st.subheader("Optimisation results")
+
+    message = state.get("message")
+    if message:
+        st.success(message)
+
+    generated_at = state.get("generated_at")
+    if generated_at:
+        st.caption(f"Solved at {generated_at}")
+
+    stored_base = state.get("base_date")
+    base_date: Optional[date]
+    if isinstance(stored_base, date):
+        base_date = stored_base
+    elif isinstance(stored_base, str):
+        try:
+            base_date = datetime.fromisoformat(stored_base).date()
+        except ValueError:
+            base_date = None
+    else:
+        base_date = None
+
+    if base_date and base_date != todays_date:
+        st.info(
+            "The displayed optimisation was generated for a different reference date "
+            f"({base_date.isoformat()}). Rerun the solver to refresh the results."
+        )
+
+    show_result_table = st.checkbox(
+        "Show optimised schedule table",
+        value=False,
+        key="show_result_table",
+        help="Toggle to display the detailed table of optimised assignments.",
+    )
+    if show_result_table:
+        st.dataframe(result_df, use_container_width=True)
+
+    _schedule_day_view(
+        result_df,
+        "Optimised schedule",
+        key_prefix="optimised",
+        depot_address=depot_address,
+    )
 
 
 def _timeline_chart(df: pd.DataFrame, title: str, *, key_prefix: str) -> None:
@@ -809,6 +870,7 @@ def main() -> None:
         problem = _build_problem(selected_jobs, selected_workers, depot=depot_address, start_day=start_weekday, allow_diff=allow_diff)
         if not problem:
             st.error("Unable to build optimisation problem – please ensure jobs and workers are selected.")
+            st.session_state.pop(_OPTIMISED_STATE_KEY, None)
         else:
             solution = solve_vrp_problem_definition(
                 problem,
@@ -822,23 +884,28 @@ def main() -> None:
             assignments = _collect_assignments(solution)
             if not assignments:
                 st.warning("Solver did not produce any assignments.")
+                st.session_state.pop(_OPTIMISED_STATE_KEY, None)
             else:
-                st.success(f"Optimisation complete. Objective value: {solution.get('objective')}")
                 result_df = _assignments_to_df(assignments, todays_date)
-                show_result_table = st.checkbox(
-                    "Show optimised schedule table",
-                    value=False,
-                    key="show_result_table",
-                    help="Toggle to display the detailed table of optimised assignments.",
+                objective = solution.get("objective")
+                message = (
+                    f"Optimisation complete. Objective value: {objective}"
+                    if objective is not None
+                    else "Optimisation complete."
                 )
-                if show_result_table:
-                    st.dataframe(result_df, use_container_width=True)
-                _schedule_day_view(
-                    result_df,
-                    "Optimised schedule",
-                    key_prefix="optimised",
-                    depot_address=depot_address,
-                )
+                st.session_state[_OPTIMISED_STATE_KEY] = {
+                    "result_df": result_df.copy(),
+                    "message": message,
+                    "objective": objective,
+                    "base_date": todays_date.isoformat(),
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                }
+
+    _render_optimised_results(
+        st.session_state.get(_OPTIMISED_STATE_KEY),
+        depot_address=depot_address,
+        todays_date=todays_date,
+    )
 
 
 if __name__ == "__main__":
